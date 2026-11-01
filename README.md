@@ -17,7 +17,8 @@ browser ──HTTPS──> fga-console ──HTTPS──> fga-storage (file API)
 
 ## Status
 
-Parts 1 and 2 of 3 work against a running fga.
+All three parts work against a running fga. To put it into production,
+see [docs/deployment.md](docs/deployment.md).
 
 ### Part 1: people's own pages
 
@@ -57,10 +58,23 @@ their own pass, and fga checks and records each one.
 - **Servers**: each configured service's health, checked live, and
   settings files to export (never pushed to a running server).
 
-Next: part 3, sign-in with the organisation's login (OIDC), certificates
-between the console and fga, and a deployment guide. Projects as something
-fga knows, removing spaces, the access graph and a check-access call need
-fga changes first.
+### Part 3: production
+
+- **Sign-in with the organisation's login** (OpenID Connect, authorization
+  code flow with PKCE): the console checks the ID token (signature,
+  issuer, audience, times, nonce), keeps the person's tokens on the
+  server, passes the access token to fga, renews it before it expires, and
+  signs out through the login service. A sign-in started in one browser
+  cannot be finished in another.
+- **HTTPS** for people, with `__Host-` cookies and strict transport
+  security.
+- **The console's certificate to fga**: TLS 1.3, trusting only fga's CA;
+  fga's admin API names the console by it.
+- **A production profile** that refuses plain HTTP, development sign-in
+  and missing certificates, and names every problem at start.
+
+Still needing changes in fga first: projects as something fga knows,
+removing spaces, the access graph, and a check-access call.
 
 ### Gaps in fga's file API
 
@@ -105,13 +119,15 @@ records (which shares were given together, profiles, a rule draft); fga
 keeps everything else.
 
 `go test ./...` runs the console's tests against stand-ins for fga's file
-and admin APIs that check every pass the console sends.
+and admin APIs that check every pass the console sends, and for a login
+service, which can be told to misbehave.
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `cmd/fga-console` | the program |
-| `internal/console` | configuration, passes, sessions, the console's API, rights and profiles |
+| `internal/console` | configuration, sign-in (development and OIDC), sessions, the console's API, rights and profiles |
+| `docs/deployment.md` | putting the console into production |
 | `web` | the pages (plain JavaScript, CSS and SVG, no third-party code), built into the program |
 | `design-mockup` | the design mockup the pages were drawn from; not served, kept for parts 2 and 3 |

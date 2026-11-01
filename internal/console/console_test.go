@@ -103,7 +103,13 @@ func (f *fakeFGA) verifyFor(auth, audience string) map[string]any {
 		return nil
 	}
 	life := claims["exp"].(float64) - claims["iat"].(float64)
-	if claims["iss"] != "fga-dev" || claims["aud"] != audience || claims["fga_tenant"] != "t-acme" || life <= 0 || life > 3600 {
+	audOK := claims["aud"] == audience
+	if list, ok := claims["aud"].([]any); ok {
+		for _, x := range list {
+			audOK = audOK || x == audience
+		}
+	}
+	if claims["iss"] != "fga-dev" || !audOK || claims["fga_tenant"] != "t-acme" || life <= 0 || life > 3600 {
 		f.t.Errorf("pass claims %v", claims)
 		return nil
 	}

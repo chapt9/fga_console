@@ -1,9 +1,11 @@
 package console
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -27,7 +29,8 @@ const passLifetime = 5 * time.Minute
 // Server is the console server.
 type Server struct {
 	cfg      *Config
-	minter   *Minter
+	minter   *Minter   // development sign-in only
+	oidc     *provider // the organisation's login
 	sessions *Sessions
 	store    *Store
 	storage  *url.URL
@@ -41,11 +44,11 @@ type Server struct {
 
 // New returns a console server. web holds the pages (index.html at its
 // root).
+//
+// client reaches fga (with the console's certificate in production);
+// sign-in with the organisation's login uses its own client, which trusts
+// the system's certificate authorities.
 func New(cfg *Config, web fs.FS, client *http.Client, log *slog.Logger, now func() time.Time) (*Server, error) {
-	key, err := ReadIssuerKey(cfg.DevSignIn.KeyFile)
-	if err != nil {
-		return nil, err
-	}
 	store, err := OpenStore(cfg.DataDir)
 	if err != nil {
 		return nil, err
@@ -54,9 +57,20 @@ func New(cfg *Config, web fs.FS, client *http.Client, log *slog.Logger, now func
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, minter: NewMinter(cfg.DevSignIn.Issuer, cfg.DevSignIn.KeyID, cfg.Tenant, key, now),
-		sessions: NewSessions(time.Duration(cfg.SessionHours)*time.Hour, 30*time.Minute, now), store: store,
+	s := &Server{cfg: cfg, sessions: NewSessions(time.Duration(cfg.SessionHours)*time.Hour, 30*time.Minute, now), store: store,
 		storage: u, admins: adminCache{seen: map[string]time.Time{}}, client: client, web: web, log: log, now: now}
+	if d := cfg.DevSignIn; d != nil {
+		key, err := ReadIssuerKey(d.KeyFile)
+		if err != nil {
+			return nil, err
+		}
+		s.minter = NewMinter(d.Issuer, d.KeyID, cfg.Tenant, key, now)
+	}
+	if cfg.OIDC != nil {
+		if s.oidc, err = newProvider(cfg.OIDC, cfg.PublicURL, &http.Client{Timeout: 15 * time.Second}, now); err != nil {
+			return nil, err
+		}
+	}
 	if cfg.AdminURL != "" {
 		if s.admin, err = url.Parse(cfg.AdminURL); err != nil {
 			return nil, err
@@ -77,8 +91,14 @@ func (s *Server) Handler() http.Handler {
 		static.ServeHTTP(w, r)
 	})
 	mux.HandleFunc("GET /api/session", s.session)
-	mux.HandleFunc("POST /api/signin", s.signIn)
 	mux.HandleFunc("POST /api/signout", s.signOut)
+	if s.minter != nil {
+		mux.HandleFunc("POST /api/signin", s.signIn)
+	}
+	if s.oidc != nil {
+		mux.HandleFunc("GET /auth/login", s.login)
+		mux.HandleFunc("GET /auth/callback", s.callback)
+	}
 	mux.HandleFunc("GET /api/spaces", s.authed(s.spaces))
 	mux.HandleFunc("GET /api/files", s.authed(s.listFiles))
 	mux.HandleFunc("PUT /api/files", s.authed(s.uploadFile))
@@ -94,14 +114,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/approvals", s.authed(s.approvals))
 	mux.HandleFunc("POST /api/approvals/{id}", s.authed(s.decideApproval))
 	s.adminRoutes(mux)
-	return s.logged(secureHeaders(mux))
+	return s.logged(s.secureHeaders(mux))
 }
 
 // ---------------------------------------------------------------- plumbing
 
-func secureHeaders(next http.Handler) http.Handler {
+// secure reports whether the console serves HTTPS, which makes its cookies
+// HTTPS-only.
+func (s *Server) secure() bool { return s.cfg.TLS != nil }
+
+func (s *Server) secureHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
+		if s.secure() {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "+
 			"connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
@@ -167,12 +194,7 @@ type handler func(w http.ResponseWriter, r *http.Request, person string)
 // cannot send, and come from this console's own origin when it names one.
 func (s *Server) authed(fn handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(SessionCookie)
-		var ss Session
-		ok := err == nil
-		if ok {
-			ss, ok = s.sessions.Get(c.Value)
-		}
+		ss, ok := s.sessionOf(r)
 		if !ok {
 			apiError(w, http.StatusUnauthorized, "UNAUTHENTICATED")
 			return
@@ -183,8 +205,32 @@ func (s *Server) authed(fn handler) http.HandlerFunc {
 				return
 			}
 		}
-		fn(w, r, ss.Person)
+		fn(w, r.WithContext(context.WithValue(r.Context(), sessionKey{}, ss)), ss.Person)
 	}
+}
+
+type sessionKey struct{}
+
+// sessionOf returns the live session the request's cookie names.
+func (s *Server) sessionOf(r *http.Request) (*Session, bool) {
+	c, err := r.Cookie(cookieName(s.secure()))
+	if err != nil {
+		return nil, false
+	}
+	return s.sessions.Get(c.Value)
+}
+
+// pass returns the pass a call to fga carries: the person's access token
+// from the organisation's login, or in development a pass minted for them.
+func (s *Server) pass(ctx context.Context, person, audience string) (string, error) {
+	if s.oidc != nil {
+		ss, _ := ctx.Value(sessionKey{}).(*Session)
+		if ss == nil || ss.Person != person {
+			return "", errSignedOut
+		}
+		return s.accessToken(ctx, ss)
+	}
+	return s.minter.Pass(person, audience, passLifetime)
 }
 
 func sameOrigin(r *http.Request) bool {
@@ -198,7 +244,7 @@ func sameOrigin(r *http.Request) bool {
 
 // call sends one request to fga's file API with a fresh pass for person.
 func (s *Server) call(r *http.Request, person, method, p string, q url.Values, body io.Reader, size int64, hdr http.Header) (*http.Response, error) {
-	pass, err := s.minter.Pass(person, StorageAudience, passLifetime)
+	pass, err := s.pass(r.Context(), person, StorageAudience)
 	if err != nil {
 		return nil, err
 	}
@@ -237,8 +283,13 @@ func relay(w http.ResponseWriter, resp *http.Response) {
 	_, _ = io.Copy(w, io.LimitReader(resp.Body, 16<<20))
 }
 
-// fgaDown answers when fga cannot be reached.
+// fgaDown answers when fga cannot be reached, or when the person's sign-in
+// ended and can give no pass.
 func (s *Server) fgaDown(w http.ResponseWriter, err error) {
+	if errors.Is(err, errSignedOut) {
+		apiError(w, http.StatusUnauthorized, "UNAUTHENTICATED")
+		return
+	}
 	s.log.Warn("fga unreachable", "err", err)
 	apiError(w, http.StatusBadGateway, "UNAVAILABLE")
 }
@@ -263,13 +314,16 @@ func validKey(k string) bool {
 // ---------------------------------------------------------------- sign-in
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
-	out := map[string]any{"signed_in": false, "organisation": s.cfg.Organisation, "tenant": s.cfg.Tenant,
-		"dev": true, "people": s.cfg.DevSignIn.People}
-	if c, err := r.Cookie(SessionCookie); err == nil {
-		if ss, ok := s.sessions.Get(c.Value); ok {
-			out["signed_in"], out["person"] = true, ss.Person
-			out["admin"] = s.isAdmin(r.Context(), ss.Person)
-		}
+	out := map[string]any{"signed_in": false, "organisation": s.cfg.Organisation, "tenant": s.cfg.Tenant, "dev": s.minter != nil}
+	if s.minter != nil {
+		out["people"] = s.cfg.DevSignIn.People
+	} else {
+		out["login"] = "/auth/login"
+	}
+	if ss, ok := s.sessionOf(r); ok {
+		ctx := context.WithValue(r.Context(), sessionKey{}, ss)
+		out["signed_in"], out["person"], out["name"] = true, ss.Person, firstOf(ss.Name, ss.Person)
+		out["admin"] = s.isAdmin(ctx, ss.Person)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -294,17 +348,21 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusInternalServerError, "INTERNAL")
 		return
 	}
-	http.SetCookie(w, cookie(ss.ID, s.cfg.SessionHours*3600, r.TLS != nil))
+	http.SetCookie(w, cookie(ss.ID, s.cfg.SessionHours*3600, s.secure()))
 	s.log.Info("signed in", "person", body.Person)
 	writeJSON(w, http.StatusOK, map[string]string{"person": ss.Person})
 }
 
+// signOut ends the session, and answers where the browser goes next: the
+// organisation login's own sign-out, when it has one.
 func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(SessionCookie); err == nil {
-		s.sessions.End(c.Value)
+	ss, _ := s.sessionOf(r)
+	next := s.logoutURL(r.Context(), ss)
+	if ss != nil {
+		s.sessions.End(ss.ID)
 	}
-	http.SetCookie(w, cookie("", -1, r.TLS != nil))
-	w.WriteHeader(http.StatusNoContent)
+	http.SetCookie(w, cookie("", -1, s.secure()))
+	writeJSON(w, http.StatusOK, map[string]string{"logout_url": next})
 }
 
 // ---------------------------------------------------------------- files

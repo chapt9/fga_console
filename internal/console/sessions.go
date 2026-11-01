@@ -8,16 +8,21 @@ import (
 	"time"
 )
 
-// SessionCookie names the console's session cookie. It holds only a random
-// session ID; passes stay on the server.
-const SessionCookie = "fga_console_session"
-
-// Session is one signed-in person.
+// Session is one signed-in person. With the organisation's login it also
+// holds the person's tokens from the login service; they stay on the
+// server and never reach the browser.
 type Session struct {
 	ID      string
 	Person  string
+	Name    string
 	Created time.Time
 	Seen    time.Time
+
+	mu           sync.Mutex
+	accessToken  string
+	refreshToken string
+	expires      time.Time
+	idToken      string
 }
 
 // Sessions keeps sessions in memory: a restart signs everyone out. A session
@@ -37,12 +42,12 @@ func NewSessions(lifetime, idle time.Duration, now func() time.Time) *Sessions {
 
 // Start begins a session for person.
 func (s *Sessions) Start(person string) (*Session, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
+	id, err := randomID(32)
+	if err != nil {
 		return nil, err
 	}
 	now := s.now()
-	ss := &Session{ID: base64.RawURLEncoding.EncodeToString(raw), Person: person, Created: now, Seen: now}
+	ss := &Session{ID: id, Person: person, Created: now, Seen: now}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweep(now)
@@ -51,20 +56,20 @@ func (s *Sessions) Start(person string) (*Session, error) {
 }
 
 // Get returns the live session with id and marks it seen.
-func (s *Sessions) Get(id string) (Session, bool) {
+func (s *Sessions) Get(id string) (*Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ss, ok := s.byID[id]
 	if !ok {
-		return Session{}, false
+		return nil, false
 	}
 	now := s.now()
 	if now.Sub(ss.Created) > s.lifetime || now.Sub(ss.Seen) > s.idle {
 		delete(s.byID, id)
-		return Session{}, false
+		return nil, false
 	}
 	ss.Seen = now
-	return *ss, true
+	return ss, true
 }
 
 // End ends a session.
@@ -82,8 +87,25 @@ func (s *Sessions) sweep(now time.Time) {
 	}
 }
 
-// cookie is the session cookie: unreadable by scripts and never sent by
-// other sites. secure is set when the console is served over HTTPS.
+func randomID(n int) (string, error) {
+	raw := make([]byte, n)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// cookieName is the session cookie's name. Over HTTPS it carries the
+// __Host- prefix, so the browser keeps it to this exact origin.
+func cookieName(secure bool) string {
+	if secure {
+		return "__Host-fga_console_session"
+	}
+	return "fga_console_session"
+}
+
+// cookie is the session cookie: it holds only a random session ID,
+// unreadable by scripts and never sent by other sites.
 func cookie(value string, maxAge int, secure bool) *http.Cookie {
-	return &http.Cookie{Name: SessionCookie, Value: value, Path: "/", MaxAge: maxAge, HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode}
+	return &http.Cookie{Name: cookieName(secure), Value: value, Path: "/", MaxAge: maxAge, HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode}
 }

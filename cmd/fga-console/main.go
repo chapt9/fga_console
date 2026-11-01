@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -43,12 +44,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: 0, Transport: &http.Transport{ResponseHeaderTimeout: 30 * time.Second, IdleConnTimeout: 90 * time.Second}}
+	client, err := console.NewFGAClient(cfg.FGATLS)
+	if err != nil {
+		return err
+	}
 	srv, err := console.New(cfg, web, client, log, time.Now)
 	if err != nil {
 		return err
 	}
-	hs := &http.Server{Addr: cfg.Listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+	hs := &http.Server{Addr: cfg.Listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute,
+		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -57,8 +62,17 @@ func run() error {
 		defer cancel()
 		_ = hs.Shutdown(shut)
 	}()
-	log.Info("fga console", "listen", "http://"+cfg.Listen, "organisation", cfg.Organisation, "files", cfg.StorageURL)
-	if err := hs.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	scheme := "http"
+	if cfg.TLS != nil {
+		scheme = "https"
+	}
+	log.Info("fga console", "listen", scheme+"://"+cfg.Listen, "profile", cfg.Profile, "organisation", cfg.Organisation, "files", cfg.StorageURL)
+	if cfg.TLS != nil {
+		err = hs.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+	} else {
+		err = hs.ListenAndServe()
+	}
+	if !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

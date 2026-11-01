@@ -153,7 +153,8 @@
         `${nav("/admin/rights", "key", "Rights")}${nav("/admin/agents", "bot", "AI agents")}${nav("/admin/spaces", "bucket", "Spaces")}` +
         `${nav("/admin/rules", "policy", "Rules")}${nav("/admin/audit", "audit", "Audit log")}${nav("/admin/servers", "server", "Servers")}` : "") +
       `<div class="nav-section">Workspace</div>${nav("/files", "files", "Files")}${nav("/approvals", "inbox", "Approvals")}</nav>` +
-      `<div class="me">${avatar(session.person)}<div><b>${esc(displayName(session.person))}</b><span class="muted">${esc(session.admin ? "Administrator" : session.person)}</span></div>` +
+      `<div class="me">${avatar(session.person)}<div><b>${esc(session.name && session.name !== session.person ? session.name : displayName(session.person))}</b>` +
+      `<span class="muted">${esc(session.admin ? "Administrator" : session.person)}</span></div>` +
       `<button class="btn ghost icon sm" data-act="signOut" title="Sign out" aria-label="Sign out">${icon("logout")}</button></div></aside>` +
       `<main class="main"><header class="topbar"><h1>${esc(title)}</h1>${sub ? `<span class="sub">${sub}</span>` : ""}<span class="spacer"></span>` +
       (session.dev ? `<span class="pill" title="People sign in by picking a name; for development only">Development sign-in</span>` : "") +
@@ -186,6 +187,14 @@
 
   function renderSignIn() {
     const people = (session && session.people) || [];
+    const brand = `<div class="brand"><span class="brand-mark">${icon("mark")}</span><span>fga console<small>${esc(session ? session.organisation : "")}</small></span></div>`;
+    if (session && !session.dev) {
+      app.innerHTML = `<div class="login"><div class="login-card">${brand}<h1>Sign in</h1>` +
+        `<p class="lead">Sign in with your organisation's login. fga then decides everything you see and do.</p>` +
+        `<a class="btn primary" href="${esc(session.login || "/auth/login")}">${icon("lock")}Sign in with ${esc(session.organisation)}</a>` +
+        `<div class="login-foot">${icon("lock")}<span>Your password goes only to your organisation's login, never to this console.</span></div></div></div>`;
+      return;
+    }
     app.innerHTML = `<div class="login"><div class="login-card"><div class="brand"><span class="brand-mark">${icon("mark")}</span>` +
       `<span>fga console<small>${esc(session ? session.organisation : "")}</small></span></div><h1>Sign in</h1>` +
       `<p class="lead">Development sign-in: choose who you are. fga then decides everything you see and do.</p><div class="tiles">` +
@@ -201,7 +210,8 @@
     go(home());
   };
   acts.signOut = async () => {
-    await api("POST", "/api/signout");
+    const r = await api("POST", "/api/signout");
+    if (r.ok && r.data && r.data.logout_url) { location.href = r.data.logout_url; return; }
     session = await loadSession();
     spaces = [];
     go("/signin");

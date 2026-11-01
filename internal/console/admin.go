@@ -83,7 +83,7 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 // for person. In development the admin API names this console by its
 // configured development console ID; in production by its certificate.
 func (s *Server) callAdmin(ctx context.Context, person, method, p string, q url.Values, body io.Reader, size int64) (*http.Response, error) {
-	pass, err := s.minter.Pass(person, s.cfg.AdminAudience, passLifetime)
+	pass, err := s.pass(ctx, person, s.cfg.AdminAudience)
 	if err != nil {
 		return nil, err
 	}
