@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,9 @@ type fakeFGA struct {
 	calls  []string
 	grants map[string]bool // space/key|grantee
 	refuse map[string]bool // keys fga answers 404 for
+	// noConsole are people fga refuses their own record (GET /v1/me);
+	// everyone else holds the Member profile's capabilities.
+	noConsole map[string]bool
 }
 
 func (f *fakeFGA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +53,13 @@ func (f *fakeFGA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/me":
+		if f.noConsole[who] {
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"error":"NOT_FOUND"}`)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": who, "capabilities": memberCapabilities()})
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/objects"):
 		io.WriteString(w, `{"entries":[{"key":"q4/plan.txt","version_id":"v1","ciphertext_length":17,"created_at":"2026-11-01T10:00:00Z"}]}`)
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/encryption"):
@@ -76,6 +87,19 @@ func (f *fakeFGA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		io.WriteString(w, `{}`)
 	}
+}
+
+// memberCapabilities are the capabilities of the console's Member profile.
+func memberCapabilities() map[string][]string {
+	caps := map[string][]string{}
+	for _, r := range Rights {
+		if slices.Contains(memberRights, r.ID) {
+			for t, actions := range r.Capabilities {
+				caps[t] = append(caps[t], actions...)
+			}
+		}
+	}
+	return caps
 }
 
 // verify checks a pass as fga's file API does: type, algorithm, key,
@@ -334,7 +358,8 @@ func TestBadInputNeverReachesFGA(t *testing.T) {
 	if resp, _ := e.do(http.MethodPost, "/api/shares", `{"grantee":"carl","actions":["delete"],"days":7,"files":[{"space":"shared","key":"a"}]}`); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("an action shares cannot give: %d", resp.StatusCode)
 	}
-	if len(e.fga.calls) != 0 {
+	// Only who alice is was asked, which carries none of the input.
+	if len(e.fga.calls) != 1 || e.fga.calls[0] != "GET /v1/me alice" {
 		t.Fatalf("fga was called: %v", e.fga.calls)
 	}
 }
@@ -452,5 +477,56 @@ func TestProfilesNameOnlyKnownRights(t *testing.T) {
 	}
 	if _, body := e.do(http.MethodGet, "/api/admin/rights", ""); !strings.Contains(body, `"id":"viewer"`) || strings.Contains(body, `"id":"steward"`) {
 		t.Fatalf("profiles after the change %s", body)
+	}
+}
+
+// Who uses the console's own pages is fga's answer to the person's own
+// GET /v1/me, asked once a minute. Without the right "Use the web console"
+// the file routes are refused before anything reaches fga's file API, and
+// the session says so; administrators keep the admin pages, which fga's
+// admin API decides.
+func TestConsoleAccessIsDecidedByFGA(t *testing.T) {
+	e := newEnv(t)
+	e.fga.noConsole = map[string]bool{"carl": true, "root": true}
+	e.signIn("alice")
+	if _, body := e.do(http.MethodGet, "/api/session", ""); !strings.Contains(body, `"access":true`) ||
+		!strings.Contains(body, `"rights":["console","open","upload","delete","share","sensitivity","ai","signing"]`) {
+		t.Fatalf("alice's session %s", body)
+	}
+	if resp, _ := e.do(http.MethodGet, "/api/spaces", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("alice listing spaces: %d", resp.StatusCode)
+	}
+	asked := 0
+	for _, c := range e.fga.calls {
+		if c == "GET /v1/me alice" {
+			asked++
+		}
+	}
+	if asked != 1 {
+		t.Fatalf("fga was asked %d times who alice is", asked)
+	}
+
+	e.signIn("carl")
+	if _, body := e.do(http.MethodGet, "/api/session", ""); !strings.Contains(body, `"access":false`) {
+		t.Fatalf("carl's session %s", body)
+	}
+	if resp, body := e.do(http.MethodGet, "/api/spaces", ""); resp.StatusCode != http.StatusForbidden || !strings.Contains(body, "NO_CONSOLE_ACCESS") {
+		t.Fatalf("carl listing spaces: %d %s", resp.StatusCode, body)
+	}
+	for _, c := range e.fga.calls {
+		if strings.HasSuffix(c, " carl") && c != "GET /v1/me carl" {
+			t.Fatalf("a call reached fga for carl: %s", c)
+		}
+	}
+
+	e.signIn("root")
+	if _, body := e.do(http.MethodGet, "/api/session", ""); !strings.Contains(body, `"admin":true`) || !strings.Contains(body, `"access":false`) {
+		t.Fatalf("root's session %s", body)
+	}
+	if resp, _ := e.do(http.MethodGet, "/api/admin/people", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("root listing people: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(http.MethodGet, "/api/spaces", ""); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("root listing spaces without the right: %d", resp.StatusCode)
 	}
 }

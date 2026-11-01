@@ -29,8 +29,14 @@ func approveCaps() map[string][]string {
 	return m
 }
 
+// consoleRight lets a person use the console's own pages: fga answers
+// them their own record (principal.self read, GET /v1/me).
+const consoleRight = "console"
+
 // Rights are the console's rights, in fga's registered types and actions.
 var Rights = []Right{
+	{consoleRight, "Use the web console", "Sign in here and see the pages their other rights allow", map[string][]string{
+		"principal.self": {"read"}}},
 	{"open", "Open files", "Find, see and open what the rules allow them, and keep their own keys", map[string][]string{
 		"storage.bucket": {"list"}, "storage.object": {"read", "stat", "discover", "read-history", "discover-history"},
 		"document.version": {"read-units", "discover"}, "document.text_unit": {"read"}, "document.derived": {"deliver"}, "text.entry": {"read"},
@@ -54,17 +60,18 @@ var Rights = []Right{
 	{"signing", "Sign files", "Register and use their own signing keys", map[string][]string{"crypto.signing-key": {"enroll", "activate", "retire"}}},
 }
 
-var memberRights = []string{"open", "upload", "delete", "share", "sensitivity", "ai", "signing"}
+var memberRights = []string{consoleRight, "open", "upload", "delete", "share", "sensitivity", "ai", "signing"}
 
-// DefaultProfiles are the profiles a new console starts with.
+// DefaultProfiles are the profiles a new console starts with. Every one
+// but "No rights" uses the console; an AI agent works through fga's APIs.
 var DefaultProfiles = []Profile{
-	{"none", "No rights", "Can sign in, and do nothing else", []string{}},
-	{"reader", "Reader", "Finds and opens what the rules allow", []string{"open"}},
+	{"none", "No rights", "Can do nothing, not even use this console", []string{}},
+	{"reader", "Reader", "Finds and opens what the rules allow", []string{consoleRight, "open"}},
 	{"member", "Member", "Works with files: opens, uploads, deletes and shares", memberRights},
 	{"member-no-share", "Member who cannot share", "Like a member, but never gives others access",
-		[]string{"open", "upload", "delete", "sensitivity", "ai", "signing"}},
+		[]string{consoleRight, "open", "upload", "delete", "sensitivity", "ai", "signing"}},
 	{"lead", "Team lead", "A member who also approves requests and manages spaces",
 		append(append([]string{}, memberRights...), "approve", "export", "manage-spaces")},
-	{"steward", "File steward", "Gives people access to single files, and opens nothing", []string{"open", "share"}},
+	{"steward", "File steward", "Gives people access to single files, and opens nothing", []string{consoleRight, "open", "share"}},
 	{"agent", "AI agent", "Opens files and runs tools for the people it acts for", []string{"open", "ai"}},
 }

@@ -36,6 +36,7 @@ type Server struct {
 	storage  *url.URL
 	admin    *url.URL
 	admins   adminCache
+	mes      meCache
 	client   *http.Client
 	web      fs.FS
 	log      *slog.Logger
@@ -58,7 +59,7 @@ func New(cfg *Config, web fs.FS, client *http.Client, log *slog.Logger, now func
 		return nil, err
 	}
 	s := &Server{cfg: cfg, sessions: NewSessions(time.Duration(cfg.SessionHours)*time.Hour, 30*time.Minute, now), store: store,
-		storage: u, admins: adminCache{seen: map[string]time.Time{}}, client: client, web: web, log: log, now: now}
+		storage: u, admins: adminCache{seen: map[string]time.Time{}}, mes: meCache{seen: map[string]meEntry{}}, client: client, web: web, log: log, now: now}
 	if d := cfg.DevSignIn; d != nil {
 		key, err := ReadIssuerKey(d.KeyFile)
 		if err != nil {
@@ -99,20 +100,20 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /auth/login", s.login)
 		mux.HandleFunc("GET /auth/callback", s.callback)
 	}
-	mux.HandleFunc("GET /api/spaces", s.authed(s.spaces))
-	mux.HandleFunc("GET /api/files", s.authed(s.listFiles))
-	mux.HandleFunc("PUT /api/files", s.authed(s.uploadFile))
-	mux.HandleFunc("DELETE /api/files", s.authed(s.deleteFile))
-	mux.HandleFunc("GET /api/files/content", s.authed(s.download))
-	mux.HandleFunc("GET /api/files/info", s.authed(s.fileInfo))
-	mux.HandleFunc("PUT /api/files/label", s.authed(s.setLabel))
-	mux.HandleFunc("GET /api/shares", s.authed(s.listShares))
-	mux.HandleFunc("POST /api/shares", s.authed(s.giveAccess))
-	mux.HandleFunc("DELETE /api/shares", s.authed(s.removeShare))
-	mux.HandleFunc("GET /api/batches", s.authed(s.batches))
-	mux.HandleFunc("POST /api/batches/{id}/take-back", s.authed(s.takeBack))
-	mux.HandleFunc("GET /api/approvals", s.authed(s.approvals))
-	mux.HandleFunc("POST /api/approvals/{id}", s.authed(s.decideApproval))
+	mux.HandleFunc("GET /api/spaces", s.user(s.spaces))
+	mux.HandleFunc("GET /api/files", s.user(s.listFiles))
+	mux.HandleFunc("PUT /api/files", s.user(s.uploadFile))
+	mux.HandleFunc("DELETE /api/files", s.user(s.deleteFile))
+	mux.HandleFunc("GET /api/files/content", s.user(s.download))
+	mux.HandleFunc("GET /api/files/info", s.user(s.fileInfo))
+	mux.HandleFunc("PUT /api/files/label", s.user(s.setLabel))
+	mux.HandleFunc("GET /api/shares", s.user(s.listShares))
+	mux.HandleFunc("POST /api/shares", s.user(s.giveAccess))
+	mux.HandleFunc("DELETE /api/shares", s.user(s.removeShare))
+	mux.HandleFunc("GET /api/batches", s.user(s.batches))
+	mux.HandleFunc("POST /api/batches/{id}/take-back", s.user(s.takeBack))
+	mux.HandleFunc("GET /api/approvals", s.user(s.approvals))
+	mux.HandleFunc("POST /api/approvals/{id}", s.user(s.decideApproval))
 	s.adminRoutes(mux)
 	return s.logged(s.secureHeaders(mux))
 }
@@ -324,6 +325,11 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), sessionKey{}, ss)
 		out["signed_in"], out["person"], out["name"] = true, ss.Person, firstOf(ss.Name, ss.Person)
 		out["admin"] = s.isAdmin(ctx, ss.Person)
+		rights, ok, err := s.me(ctx, ss.Person)
+		out["access"], out["rights"] = ok, rights
+		if err != nil {
+			out["access_error"] = "UNAVAILABLE"
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

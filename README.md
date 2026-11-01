@@ -85,8 +85,11 @@ The console shows what fga's file API offers, and nothing made up:
 - there is no "files shared with me": a person opens such a file by name;
 - a listing gives a file's name, stored (encrypted) size and date, not its
   owner or sensitivity;
-- there is no "what may I do here?", so buttons are not greyed out in
-  advance; fga's refusal is shown in plain words instead;
+- fga's `GET /v1/me` tells the console a person's own rights, so each
+  page and button shows only to people holding its right, and only people
+  with the right "Use the web console" (`principal.self` `read`) use the
+  console's own pages. There is still no "what may I do with this file?",
+  so for a single file fga's refusal is shown in plain words instead;
 - there is no person's own activity, and no directory search for people.
 
 ## Running it

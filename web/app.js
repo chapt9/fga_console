@@ -103,6 +103,7 @@
     OVERLOADED: "fga is busy. Try again in a moment",
     CROSS_SITE: "Refused: the request did not come from this console",
     UNKNOWN_PERSON: "That person can't sign in here",
+    NO_CONSOLE_ACCESS: "fga doesn't let you use this console",
   };
   const plainError = code => ERRORS[code] || `fga refused (${code || "error"})`;
 
@@ -131,15 +132,19 @@
   // routes maps each page to its renderer; admin.js adds the
   // administrator's pages, which only people fga accepts as administrators
   // reach (and the admin API refuses everyone else in any case).
-  const routes = { "/files": renderFiles, "/approvals": renderApprovals };
-  const home = () => (session && session.admin ? "/admin" : "/files");
+  // A page shows only to people holding its right, as fga reports their
+  // rights; fga still decides every request made from it.
+  const routes = { "/files": renderFiles, "/approvals": renderApprovals, "/none": renderNoPages };
+  const needs = { "/files": "open", "/approvals": "approve" };
+  const can = right => !!(session && session.access && (session.rights || []).includes(right));
+  const home = () => (session && session.admin ? "/admin" : can("open") ? "/files" : can("approve") ? "/approvals" : "/none");
   function route() {
     const path = (location.hash.slice(1) || home()).split("?")[0];
     closeDrawer();
     if (!session || !session.signed_in) { if (path !== "/signin") return go("/signin"); return renderSignIn(); }
     if (path === "/signin") return go(home());
     const page = routes[path];
-    if (!page || (path.startsWith("/admin") && !session.admin)) return go(home());
+    if (!page || (path.startsWith("/admin") && !session.admin) || (needs[path] && !can(needs[path]))) return go(home());
     page(params());
   }
 
@@ -152,7 +157,8 @@
       (session.admin ? `<div class="nav-section">Administration</div>${nav("/admin", "home", "Overview")}${nav("/admin/people", "users", "People")}` +
         `${nav("/admin/rights", "key", "Rights")}${nav("/admin/agents", "bot", "AI agents")}${nav("/admin/spaces", "bucket", "Spaces")}` +
         `${nav("/admin/rules", "policy", "Rules")}${nav("/admin/audit", "audit", "Audit log")}${nav("/admin/servers", "server", "Servers")}` : "") +
-      `<div class="nav-section">Workspace</div>${nav("/files", "files", "Files")}${nav("/approvals", "inbox", "Approvals")}</nav>` +
+      (can("open") || can("approve") ? `<div class="nav-section">Workspace</div>` : "") +
+      (can("open") ? nav("/files", "files", "Files") : "") + (can("approve") ? nav("/approvals", "inbox", "Approvals") : "") + `</nav>` +
       `<div class="me">${avatar(session.person)}<div><b>${esc(session.name && session.name !== session.person ? session.name : displayName(session.person))}</b>` +
       `<span class="muted">${esc(session.admin ? "Administrator" : session.person)}</span></div>` +
       `<button class="btn ghost icon sm" data-act="signOut" title="Sign out" aria-label="Sign out">${icon("logout")}</button></div></aside>` +
@@ -266,9 +272,9 @@
     const folder = p.get("f") || "";
     const head = () => pageHead("Files", "The spaces fga lets you list, and their files. Everything you do here is decided by fga.",
       `<button class="btn ghost" data-act="openShared">Open a shared file</button>` +
-      `<button class="btn ghost" data-act="myBatches">${icon("users")}Access you gave</button>` +
-      `<button class="btn" data-act="giveAccess" data-b="${esc(pick)}">${icon("share")}Give access</button>` +
-      (e2e(pick) ? "" : `<button class="btn primary" data-act="upload" data-b="${esc(pick)}" data-f="${esc(folder)}">${icon("upload")}Upload</button>`));
+      (can("share") ? `<button class="btn ghost" data-act="myBatches">${icon("users")}Access you gave</button>` +
+        `<button class="btn" data-act="giveAccess" data-b="${esc(pick)}">${icon("share")}Give access</button>` : "") +
+      (e2e(pick) || !can("upload") ? "" : `<button class="btn primary" data-act="upload" data-b="${esc(pick)}" data-f="${esc(folder)}">${icon("upload")}Upload</button>`));
     const spaceList = `<nav class="card spaces" aria-label="Spaces"><div class="spaces-head">Spaces</div>` + spaces.map(s =>
       `<a class="space-row ${s.name === pick ? "on" : ""}" href="#/files?b=${encodeURIComponent(s.name)}">${icon(s.encryption === "client" ? "lock" : "bucket")}` +
       `<span class="grow"><b>${esc(s.name)}</b><small>${esc(s.encryption ? W.encryption(s.encryption).name : "")}</small></span></a>`).join("") + `</nav>`;
@@ -304,7 +310,7 @@
         `<div class="muted small">${esc(W.fileKind(e.key).name)}</div></div></div></td>` +
         `<td class="num hide-sm nowrap">${bytes(e.size)}</td><td class="muted hide-sm nowrap">${esc(when(e.created))}</td><td class="actions">` +
         (e2e(space) ? "" : `<button class="btn sm" data-act="download" data-b="${esc(space)}" data-k="${esc(e.key)}">${icon("download", "sm")}Download</button>`) +
-        (e2e(space) ? "" : `<button class="btn sm icon ghost" data-act="giveAccess" data-b="${esc(space)}" data-k="${esc(e.key)}" aria-label="Give access" title="Give access">${icon("share")}</button>`) +
+        (e2e(space) || !can("share") ? "" : `<button class="btn sm icon ghost" data-act="giveAccess" data-b="${esc(space)}" data-k="${esc(e.key)}" aria-label="Give access" title="Give access">${icon("share")}</button>`) +
         `<button class="btn sm icon ghost" data-act="details" data-b="${esc(space)}" data-k="${esc(e.key)}" aria-label="Details and access" title="Details and access">${icon("more")}</button>` +
         `</td></tr>`).join("") + `</tbody></table>${note}`;
   }
@@ -341,12 +347,13 @@
         : shareList.length ? `<div class="card flat">${shareList.map(g => `<div class="list-row">${avatar(g.grantee)}<div class="grow"><b>${esc(displayName(g.grantee))}</b>` +
           `<div class="chips">${(g.actions || []).map(a => `<span class="chip">${esc(W.action(a, "storage.object").label)}</span>`).join("")}</div>` +
           `<div class="muted small">until ${esc(day(g.expires_at))} · given by ${esc(displayName(g.grantor))}</div></div>` +
-          `<button class="btn sm danger" data-act="unshare" data-b="${esc(d.b)}" data-k="${esc(d.k)}" data-id="${esc(g.grantee)}">Remove</button></div>`).join("")}</div>`
+          (can("share") ? `<button class="btn sm danger" data-act="unshare" data-b="${esc(d.b)}" data-k="${esc(d.k)}" data-id="${esc(g.grantee)}">Remove</button>` : "") + `</div>`).join("")}</div>`
         : `<p class="muted small">Not shared with anyone.</p>`) +
       (e2e(d.b) || !(v && v.length < 65536) ? "" : `<h4 class="spaced-top">Preview</h4><div id="preview"><button class="btn sm" data-act="preview" data-b="${esc(d.b)}" data-k="${esc(d.k)}">${icon("eye", "sm")}Show as text</button></div>`),
-      `<button class="btn danger" data-act="deleteFile" data-b="${esc(d.b)}" data-k="${esc(d.k)}">${icon("trash", "sm")}Delete</button>` +
-      `<button class="btn" data-act="label" data-b="${esc(d.b)}" data-k="${esc(d.k)}">${icon("tag", "sm")}Sensitivity</button><span class="spacer"></span>` +
-      `<button class="btn primary" data-act="giveAccess" data-b="${esc(d.b)}" data-k="${esc(d.k)}">${icon("share")}Give access</button>`);
+      (can("delete") ? `<button class="btn danger" data-act="deleteFile" data-b="${esc(d.b)}" data-k="${esc(d.k)}">${icon("trash", "sm")}Delete</button>` : "") +
+      (can("sensitivity") ? `<button class="btn" data-act="label" data-b="${esc(d.b)}" data-k="${esc(d.k)}">${icon("tag", "sm")}Sensitivity</button>` : "") +
+      `<span class="spacer"></span>` +
+      (can("share") ? `<button class="btn primary" data-act="giveAccess" data-b="${esc(d.b)}" data-k="${esc(d.k)}">${icon("share")}Give access</button>` : ""));
   };
 
   // openShared reaches a file shared with the person in a space they may
@@ -596,6 +603,16 @@
   });
 
   // ---------------------------------------------------------------- approvals
+
+  // renderNoPages is the page of someone fga lets use none of the console's
+  // pages: without the right "Use the web console", or with no right that
+  // has a page.
+  function renderNoPages() {
+    const text = session.access_error ? "fga can't be reached right now, so the console can't tell which pages are yours. Try again in a moment."
+      : !session.access ? "fga doesn't let you use this console. An administrator can give you the right “Use the web console”."
+      : "fga lets you use this console, but none of your rights has a page here yet. An administrator can give you more rights.";
+    shell("Welcome", "", `<div class="page">${pageHead("Welcome")}<div class="card"><div class="empty">${icon("lock")}<div>${esc(text)}</div></div></div></div>`);
+  }
 
   async function renderApprovals() {
     shell("Approvals", "", `<div class="page">${pageHead("Approvals", "Requests that need a second person, as fga lists them for you.")}${loading("Asking fga…")}</div>`);
