@@ -1,0 +1,2 @@
+Copied from fga (github.com/chapt9/fga) commit 311cd89, sdk/go/crypto/testdata,
+written by TestBrowserVectors -update. Replace them together with that commit.
