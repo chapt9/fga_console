@@ -279,13 +279,29 @@
   acts.disablePerson = d => confirmBox(`Disable ${displayName(d.id)}?`,
     `<p>They can no longer sign in or do anything, and nothing shared with them works any more. AI agents acting for them stop too.</p>` +
     `<p class="muted small">fga keeps the person, so its audit log still says who did what. Disabling is final: fga has no way to enable someone again.</p>`,
-    "Disable", async () => {
-      const r = await api("POST", `/api/admin/people/${encodeURIComponent(d.id)}/disable`);
-      if (!r.ok) return toast(fail(r.error), "bad");
-      await loadPeople();
-      refreshPeople();
-      toast(`${displayName(d.id)} is disabled`, "ok");
-    });
+    "Disable", () => disablePerson(d.id, false));
+  // fga refuses (409) to disable the last person who can open some
+  // end-to-end encrypted files, with a count per space and never a file
+  // name, since it keeps no other copy of their keys. The administrator may
+  // confirm, and the request is repeated with confirm_unreadable.
+  async function disablePerson(id, confirmed) {
+    const r = await api("POST", `/api/admin/people/${encodeURIComponent(id)}/disable`, confirmed ? { confirm_unreadable: true } : undefined);
+    const lost = !confirmed && r.status === 409 && r.data && Array.isArray(r.data.unreadable) ? r.data.unreadable : [];
+    if (lost.length) {
+      const n = lost.reduce((s, u) => s + (Number(u.files) || 0), 0), who = esc(displayName(id));
+      return confirmBox(`Disable ${displayName(id)} anyway?`,
+        `<div class="banner bad">${icon("warn")}<span>${who} is the only person who can open ${plural(n, "file")} in end-to-end encrypted spaces.</span></div>` +
+        `<table class="mini-tbl"><thead><tr><th>Space</th><th>Files</th></tr></thead><tbody>` +
+          lost.map(u => `<tr><td>${esc(u.bucket)}</td><td>${esc(String(u.files))}</td></tr>`).join("") + `</tbody></table>` +
+        `<p>fga keeps no other copy of these files' keys. Once ${who} is disabled, nobody can ever open them again: not fga, not an administrator. Disabling is final.</p>` +
+        `<p class="muted small">Cancel if these files are still needed.</p>`,
+        `Disable and lose ${plural(n, "file")}`, () => disablePerson(id, true));
+    }
+    if (!r.ok) return toast(fail(r.error), "bad");
+    await loadPeople();
+    refreshPeople();
+    toast(`${displayName(id)} is disabled`, "ok");
+  }
 
   // ---------------------------------------------------------------- rights and profiles
 

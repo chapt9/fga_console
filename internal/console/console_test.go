@@ -116,6 +116,11 @@ func (f *fakeFGA) verifyFor(auth, audience string) map[string]any {
 	return claims
 }
 
+// lastReaderRefusal is fga's answer to disabling the last person who can
+// open some client-mode files: counts per bucket, never a file name.
+const lastReaderRefusal = `{"error":"catalog: 3 client-mode files would have no reader left (reports: 2, shared: 1); ` +
+	`send {\"confirm_unreadable\": true} to make the change anyway","unreadable":[{"bucket":"reports","files":2},{"bucket":"shared","files":1}]}` + "\n"
+
 // fakeAdmin stands in for fga's admin API: root is its only administrator.
 type fakeAdmin struct {
 	f     *fakeFGA
@@ -147,6 +152,15 @@ func (a *fakeAdmin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"items":[{"id":"alice","roles":["member"],"attributes":{"projects":["p1"]},"disabled":false,"capabilities":{}}]}`)
 	case r.Method == http.MethodPut:
 		w.WriteHeader(http.StatusNoContent)
+	case strings.HasSuffix(r.URL.Path, "/disable"):
+		// Every person here is the last reader of some client-mode files,
+		// so fga disables them only when the change is confirmed.
+		if string(body) == `{"confirm_unreadable":true}` {
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			w.WriteHeader(http.StatusConflict)
+			io.WriteString(w, lastReaderRefusal)
+		}
 	default:
 		io.WriteString(w, `{}`)
 	}
@@ -438,6 +452,30 @@ func TestAdminChangesAreForwardedAsTheyAre(t *testing.T) {
 	}
 	if len(puts) != 1 || puts[0] != `PUT /v1/admin/identities/carl {"roles":["member"],"attributes":{"projects":["p1","p2"]}}` {
 		t.Fatalf("admin API saw %q", puts)
+	}
+}
+
+// The console passes fga's last-reader refusal back as fga sent it, so the
+// page can show the counts, and the page's confirmation on as it was sent.
+func TestDisablingTheLastReaderNeedsConfirming(t *testing.T) {
+	e := newEnv(t)
+	e.signIn("root")
+	resp, body := e.do(http.MethodPost, "/api/admin/people/carl/disable", "")
+	if resp.StatusCode != http.StatusConflict || resp.Header.Get("Content-Type") != "application/json" || body != lastReaderRefusal {
+		t.Fatalf("unconfirmed: %d %q %s", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	}
+	if resp, body := e.do(http.MethodPost, "/api/admin/people/carl/disable", `{"confirm_unreadable":true}`); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("confirmed: %d %s", resp.StatusCode, body)
+	}
+	var disables []string
+	for _, c := range e.admin.calls {
+		if strings.HasSuffix(strings.Fields(c)[1], "/disable") {
+			disables = append(disables, c)
+		}
+	}
+	want := []string{"POST /v1/admin/identities/carl/disable ", `POST /v1/admin/identities/carl/disable {"confirm_unreadable":true}`}
+	if len(disables) != 2 || disables[0] != want[0] || disables[1] != want[1] {
+		t.Fatalf("admin API saw %q", disables)
 	}
 }
 
