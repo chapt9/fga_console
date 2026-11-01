@@ -1,6 +1,6 @@
 // The access graph page. Three views keep it readable however many people
-// there are: Rules (roles, rules and permission sets for one kind of thing;
-// people only as counts), One person (that person's roles, permission sets,
+// there are: Rules (roles, rules and rights for one kind of thing;
+// people only as counts), One person (that person's roles, rights,
 // agents and the rules that reach them) and One file (who can do something
 // with it, grouped by the rule that decides, at most 30 people as boxes).
 "use strict";
@@ -38,7 +38,7 @@
     sub: `${plural(roleCount(r), "person", "people")} · ${plural(S.rules.filter(x => x.type === gv.scope && x.roles.includes(r)).length, "rule")} here` });
   const typeNode = m => m.node("t:" + gv.scope, "type", { label: "About", title: W.type(gv.scope).many, ref: gv.scope,
     acts: S.types[gv.scope].map(a => W.action(a, gv.scope).label) });
-  const permNode = (m, id) => m.node("perm:" + id, "perm", { label: "Permission set", title: W.set(id, S.permSets).name, ref: id,
+  const permNode = (m, id) => m.node("perm:" + id, "perm", { label: "Right", title: W.set(id, S.permSets).name, ref: id,
     acts: (S.permSets[id].caps[gv.scope] || []).map(a => W.action(a, gv.scope).label) });
   const personNode = (m, p, extra = {}) => m.node("p:" + p.id, p.kind === "agent" ? "agent" : "user", { label: p.kind === "agent" ? "AI agent" : "Person",
     title: displayName(p.id), ref: p.id, disabled: p.status !== "active", chips: (p.attributes.projects || []).map(projectName), ...extra });
@@ -130,7 +130,7 @@
 
   // ---------------------------------------------------------------- page
 
-  const PALETTE = { rules: [["role", "Role", "who rules apply to"], ["rule", "Rule", "allows or forbids"], ["perm", "Permission set", "the most anyone may do"]],
+  const PALETTE = { rules: [["role", "Role", "who rules apply to"], ["rule", "Rule", "allows or forbids"], ["perm", "Right", "the most someone may do"]],
     person: [["rule", "Rule", "allows or forbids"]], file: [] };
 
   function renderGraph(params) {
@@ -158,11 +158,11 @@
       (pal.length ? `<h4>Add</h4>` + pal.map(([k, name, sub]) => `<button class="pal-item k-${k === "rule" ? "allow" : k}" draggable="true" data-kind="${k}" data-act="gAdd">` +
         `<span class="sw"></span><span><b>${esc(name)}</b><small>${esc(sub)}</small></span></button>`).join("") : "") +
       `<div class="legend"><h4>How it reads</h4>` + {
-        rules: `<p><b>Rules</b> allow (green) or forbid (red) actions to <b>roles</b>. <b>Permission sets</b> are the most anyone holding them may do.</p>` +
-          `<p>Something is allowed when a permission set includes it, a rule allows it, and no rule forbids it. Anything else is not allowed.</p>` +
+        rules: `<p><b>Rules</b> allow (green) or forbid (red) actions to <b>roles</b>. <b>Rights</b> are the most someone holding them may do.</p>` +
+          `<p>Something is allowed when one of their rights includes it, a rule allows it, and no rule forbids it. Anything else is not allowed.</p>` +
           `<p>People are counted, not drawn. Open <b>One person</b> to see someone's path, or <b>One file</b> to see who can reach a file.</p>`,
-        person: `<p>Everything that reaches this person for one kind of thing: their roles, permission sets, AI agents and the rules that apply.</p>` +
-          `<p>Drag from the person's right-hand dot onto a role or a permission set to give it.</p>`,
+        person: `<p>Everything that reaches this person for one kind of thing: their roles, rights, AI agents and the rules that apply.</p>` +
+          `<p>Drag from the person's right-hand dot onto a role or a right to give it.</p>`,
         file: `<p>Who can do one thing with one file, grouped by the rule that decides. Groups of more than three are one box; click it for the list.</p>` +
           `<p>Read only: change rules in the Rules view.</p>`,
       }[gv.view] + `<p class="muted">Select a box or a line and press Delete to remove it.</p></div></aside>` +
@@ -230,7 +230,7 @@
   const canConnect = (a, b) => gv.view !== "file" && !!PAIRS[`${a.kind}>${b.kind}`];
 
   function connect(a, b) {
-    if (!canConnect(a, b)) return toast("Connect a person to a role or a permission set, or a role to a rule.", "bad");
+    if (!canConnect(a, b)) return toast("Connect a person to a role or a right, or a role to a rule.", "bad");
     if (b.kind === "role" && b.ref === "*") return toast("Everyone already includes every active person.", "bad");
     if (a.kind === "role") {
       const r = S.rules.find(x => x.id === b.ref);
@@ -281,7 +281,7 @@
       case "agent": return acts.disableAgent({ id: n.ref });
       case "role": return n.ref === "*" ? toast("Everyone is built in", "bad") : acts.removeRole({ id: n.ref });
       case "rule": return acts.removeRule({ id: n.ref });
-      case "perm": return S.permSets[n.ref].builtin ? toast("Built-in permission sets cannot be removed", "bad") : acts.removeSet({ id: n.ref });
+      case "perm": return S.permSets[n.ref].builtin ? toast("Built-in rights cannot be removed", "bad") : acts.removeSet({ id: n.ref });
       case "dlg": return acts.revokeDlg({ id: n.ref });
       default: return toast("This box shows what fga knows; it cannot be removed here.", "bad");
     }
@@ -304,8 +304,8 @@
       id = "rule:" + rid;
     } else if (kind === "perm") {
       const sid = unique("new-set", x => S.permSets[x]);
-      S.permSets[sid] = { name: "New permission set", caps: { [gv.scope]: [] } };
-      change("directory", "New permission set");
+      S.permSets[sid] = { name: "New right", caps: { [gv.scope]: [] } };
+      change("directory", "New right");
       id = "perm:" + sid;
     } else return;
     gv.pos[posKey()][id] = point;
@@ -318,7 +318,7 @@
 
   const inspectedNode = () => gv.inspected && gv.inspected.type === "node" ? graph.node(gv.inspected.id) : null;
   const head = (cls, kind, title) => `<div class="insp-title ${cls}"><span class="sw"></span><div><small>${esc(kind)}</small><h3>${esc(title)}</h3></div></div>`;
-  const dirNote = `<p class="insp-note">People and permission changes wait under Unsaved changes until you apply them.</p>`;
+  const dirNote = `<p class="insp-note">Changes to people and rights wait under Unsaved changes until you apply them.</p>`;
   const polNote = `<p class="insp-note policy">Rule changes go into the draft, which is signed on a separate computer.</p>`;
 
   function peopleList(ids, q) {
@@ -395,13 +395,13 @@
           `<div class="field"><span>Who</span><div class="chips">${r.roles.map(x => `<span class="chip on">${roleName(x, true)}<button class="x" data-act="gRuleRole" data-r="${esc(x)}" aria-label="Remove">×</button></span>`).join("") || '<span class="muted small">Nobody yet</span>'}</div>` +
           `<select class="input" data-on-change="gRuleRoleAdd" aria-label="Add a role"><option value="">Add a role…</option>${["*", ...allRoles()].filter(x => !r.roles.includes(x)).map(x => `<option value="${esc(x)}">${roleName(x, true)}</option>`).join("")}</select></div>` +
           `<div class="field"><span>May</span><div class="chips">${S.types[r.type].map(a => `<button class="chip ${r.actions.includes(a) ? (r.effect === "deny" ? "deny" : "on") : ""}" data-act="gRuleAction" data-a="${esc(a)}" title="${esc(W.action(a, r.type).help)}">${esc(W.action(a, r.type).label)}</button>`).join("")}</div></div>` +
-          `<div class="field"><span>Only when</span>${W.conditionsFor(r.type).map(c => `<label class="check"><input type="checkbox" data-on-change="gRuleCond" data-c="${esc(c.id)}" ${m.ids.includes(c.id) ? "checked" : ""}>${esc(c.text)}</label>`).join("")}` +
+          `<div class="field"><span>Only when</span>${W.conditionsFor(r.type).map(c => `<label class="check"><input type="checkbox" data-on-change="gRuleCond" data-c="${esc(c.id)}" ${m.ids.includes(c.id) ? "checked" : ""}>${esc(W.condText(c, r.type))}</label>`).join("")}` +
           (m.custom ? `<div class="mini-row"><span class="grow muted small">and a custom condition</span></div>${A.tech ? `<code class="tech block">${esc(m.custom)}</code>` : ""}` : "") + `</div>` +
           `<div class="btn-row"><button class="btn" data-act="editRule" data-id="${esc(r.id)}">Open in a form</button><button class="btn danger" data-act="removeRule" data-id="${esc(r.id)}">${icon("trash", "sm")}Remove</button></div>`;
       }
       case "perm": {
         const s = S.permSets[n.ref], n2 = S.principals.filter(p => p.grants.includes(n.ref)).length, on = s.caps[gv.scope] || [];
-        return head("k-perm", "Permission set", W.set(n.ref, S.permSets).name) + dirNote +
+        return head("k-perm", "Right", W.set(n.ref, S.permSets).name) + dirNote +
           `<div class="field"><span>Includes, for ${esc(W.type(gv.scope).many.toLowerCase())}</span><div class="chips">${S.types[gv.scope].map(a => s.builtin
             ? (on.includes(a) ? actChip(a, gv.scope, "on") : "")
             : `<button class="chip ${on.includes(a) ? "on" : ""}" data-act="gPermAction" data-a="${esc(a)}">${esc(W.action(a, gv.scope).label)}</button>`).join("")}</div>` +
@@ -415,7 +415,7 @@
           `<div class="field"><span>Roles</span><div class="chips">${p.roles.map(r => `<span class="chip on">${roleName(r)}<button class="x" data-act="gPRole" data-r="${esc(r)}" aria-label="Remove">×</button></span>`).join("") || '<span class="muted small">none</span>'}</div>` +
           `<select class="input" data-on-change="gPRoleAdd" aria-label="Add a role"><option value="">Add a role…</option>${allRoles().filter(r => !p.roles.includes(r)).map(r => `<option value="${esc(r)}">${roleName(r)}</option>`).join("")}</select></div>` +
           (p.kind === "user" ? `<div class="field"><span>Projects</span><div class="check-grid">${S.projects.map(x => `<label class="check"><input type="checkbox" data-on-change="gPProject" data-p="${esc(x.id)}" ${(p.attributes.projects || []).includes(x.id) ? "checked" : ""}>${esc(x.name)}</label>`).join("")}</div></div>` : "") +
-          `<div class="field"><span>Permission sets</span>${Object.keys(S.permSets).map(id => `<label class="check"><input type="checkbox" data-on-change="gPSet" data-s="${esc(id)}" ${p.grants.includes(id) ? "checked" : ""}>${setName(id)}</label>`).join("")}</div>` +
+          `<div class="field"><span>Rights</span>${Object.keys(S.permSets).map(id => `<label class="check"><input type="checkbox" data-on-change="gPSet" data-s="${esc(id)}" ${p.grants.includes(id) ? "checked" : ""}>${setName(id)}</label>`).join("")}</div>` +
           `<div class="btn-row">${gv.view === "person" && gv.who === p.id ? "" : `<a class="btn" href="#/admin/graph?view=person&id=${encodeURIComponent(p.id)}&type=${encodeURIComponent(gv.scope)}">Show their path</a>`}` +
           `${p.status === "active" ? `<button class="btn danger" data-act="${n.kind === "agent" ? "disableAgent" : "disablePerson"}" data-id="${esc(p.id)}">${n.kind === "agent" ? "Remove" : "Disable"}</button>` : ""}</div>`;
       }
@@ -438,7 +438,7 @@
     return "";
   }
 
-  const RELATION = { "user>role": "has the role", "agent>role": "has the role", "user>perm": "holds", "agent>perm": "holds", "role>rule": "is covered by",
+  const RELATION = { "user>role": "has the role", "agent>role": "has the role", "user>perm": "has the right", "agent>perm": "has the right", "role>rule": "is covered by",
     "rule>type": "is about", "perm>type": "limits", "agent>dlg": "acts as", "dlg>user": "for", "rule>file": "decides for", "group>rule": "are let in by", "user>rule": "is let in by" };
   function edgeInspector(el, e) {
     if (!e) { el.innerHTML = ""; return; }
@@ -499,7 +499,7 @@
     if (ids.has("shared") && r.actions.length !== 1) { el.checked = !el.checked; return toast("A rule about shared access names exactly one action", "bad"); }
     const action = m.grantAction && r.actions.length !== 1 ? [m.grantAction] : r.actions;
     r.when = W.conditionExpr([...ids], m.custom, action);
-    change("policy", `Rule “${ruleTitle(r)}”: ${el.checked ? "only" : "no longer only"} when ${W.condition(d.c).text}`);
+    change("policy", `Rule “${ruleTitle(r)}”: ${el.checked ? "only" : "no longer only"} when ${W.condText(W.condition(d.c), r.type)}`);
     refresh();
   };
   acts.gPermAction = d => {

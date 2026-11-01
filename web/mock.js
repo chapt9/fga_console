@@ -30,18 +30,22 @@ window.FGA_MOCK = (() => {
   const OWNER = "resource.attributes.owner == principal.id";
   const GRANTEE = action => `has(resource.attributes.shared_with) && principal.id in resource.attributes.shared_with${/^[a-z]+$/.test(action) ? `.${action}` : `["${action}"]`}`;
   const NOT_SELF = "(!has(resource.attributes.grantee) || resource.attributes.grantee != principal.id)";
+  // Team leads are chosen per project: a person's leads attribute lists the
+  // projects they lead, so leading Apollo gives nothing in Borealis.
+  const LEADS = "resource.attributes.project in principal.attributes.leads";
+  const LEADS_ANY = "has(principal.attributes.leads) && principal.attributes.leads != []";
   const rule = (type, id, name, effect, actions, roles, when = "", set = "business") => ({ set, type, id, name, effect, actions, roles, when });
 
   const rules = [
     rule("storage.bucket", "members-use-bucket", "Members use their projects' spaces", "allow", ["create-object", "list"], ["member"], SAME_PROJECT),
-    rule("storage.bucket", "leads-approve-buckets", "Team leads approve requests on their spaces", "allow", ["approve"], ["lead"], SAME_PROJECT),
-    rule("storage.bucket", "leads-manage-buckets", "Team leads manage their projects' spaces", "allow", ["manage", "share"], ["lead"], SAME_PROJECT),
+    rule("storage.bucket", "leads-approve-buckets", "Team leads approve requests on their spaces", "allow", ["approve"], ["*"], LEADS),
+    rule("storage.bucket", "leads-manage-buckets", "Team leads manage their projects' spaces", "allow", ["manage", "share"], ["*"], LEADS),
     rule("storage.bucket", "stewards-browse", "File stewards browse their projects' spaces", "allow", ["list"], ["steward"], SAME_PROJECT),
     rule("storage.object", "owner-all", "Owners do anything with their files", "allow", ["read", "stat", "discover", "read-history", "discover-history",
       "new-version", "delete", "delete-version", "share", "label", "export"], ["*"], OWNER),
     rule("storage.object", "owner-lowers-with-approval", "Owners may lower a file's sensitivity", "allow", ["relabel"], ["*"], OWNER),
     rule("storage.object", "members-propose-labels", "Members suggest a sensitivity", "allow", ["propose-label"], ["member"], SAME_PROJECT),
-    rule("storage.object", "leads-approve-objects", "Team leads approve requests on files", "allow", ["approve"], ["lead"], SAME_PROJECT),
+    rule("storage.object", "leads-approve-objects", "Team leads approve requests on files", "allow", ["approve"], ["*"], LEADS),
     rule("storage.object", "members-read", "Members find and open their projects' files", "allow", ["read", "stat", "discover"], ["member"], SAME_PROJECT),
     rule("storage.object", "auditors-history", "Auditors see the history of files", "allow", ["read-history", "discover-history"], ["auditor"]),
     rule("storage.object", "contractors-never-read", "Contractors never open files", "deny", ["read"], ["contractor"]),
@@ -53,24 +57,24 @@ window.FGA_MOCK = (() => {
       `${SAME_PROJECT} && ${NOT_SELF}`),
     rule("document.version", "owner-versions", "Owners do anything with their documents", "allow", ["read-units", "raw-read", "discover", "share", "export"], ["*"], OWNER),
     rule("document.version", "members-read-versions", "Members read their projects' documents", "allow", ["read-units", "discover"], ["member"], SAME_PROJECT),
-    rule("document.version", "leads-approve-versions", "Team leads approve requests on documents", "allow", ["approve"], ["lead"], SAME_PROJECT),
+    rule("document.version", "leads-approve-versions", "Team leads approve requests on documents", "allow", ["approve"], ["*"], LEADS),
     rule("document.version", "grantees-read-units", "People a document is shared with may read it", "allow", ["read-units"], ["*"], GRANTEE("read-units")),
     rule("document.version", "grantees-find-documents", "People a document is shared with may find it", "allow", ["discover"], ["*"], GRANTEE("discover")),
     rule("document.version", "stewards-documents", "File stewards find and share their projects' documents", "allow", ["discover", "share"], ["steward"],
       `${SAME_PROJECT} && ${NOT_SELF}`),
     rule("document.text_unit", "owner-lowers-units-with-approval", "Owners may lower a section's sensitivity", "allow", ["relabel"], ["*"], OWNER),
-    rule("document.text_unit", "leads-approve-units", "Team leads approve requests on sections", "allow", ["approve"], ["lead"], SAME_PROJECT),
+    rule("document.text_unit", "leads-approve-units", "Team leads approve requests on sections", "allow", ["approve"], ["*"], LEADS),
     rule("document.text_unit", "owner-units", "Owners do anything with their sections", "allow", ["read", "share", "label", "export-key"], ["*"], OWNER),
     rule("document.text_unit", "members-read-units-below-restricted", "Members read sections below Restricted", "allow", ["read"], ["member"],
       SAME_PROJECT + " && resource.attributes.label_rank < 3"),
     rule("document.derived", "owner-lowers-derived-with-approval", "Owners may lower a summary's sensitivity", "allow", ["relabel"], ["*"], OWNER),
-    rule("document.derived", "leads-approve-derived", "Team leads approve requests on summaries", "allow", ["approve"], ["lead"], SAME_PROJECT),
+    rule("document.derived", "leads-approve-derived", "Team leads approve requests on summaries", "allow", ["approve"], ["*"], LEADS),
     rule("document.derived", "owner-derived", "Owners do anything with their summaries", "allow", ["deliver", "declassify", "label", "new-version", "share"], ["*"], OWNER),
     rule("document.derived", "members-receive-derived", "Members receive their projects' summaries", "allow", ["deliver"], ["member"], SAME_PROJECT),
-    rule("document.derived", "leads-receive-declassified", "Team leads receive declassified summaries", "allow", ["declassify"], ["lead"], SAME_PROJECT),
+    rule("document.derived", "leads-receive-declassified", "Team leads receive declassified summaries", "allow", ["declassify"], ["*"], LEADS),
     rule("text.entry", "owner-entries", "Owners do anything with their text entries", "allow", ["read", "update", "use-in-model", "share"], ["*"], OWNER),
     rule("text.entry", "members-read-entries", "Members read their projects' text entries", "allow", ["read"], ["member"], SAME_PROJECT),
-    rule("text.entry", "leads-approve-entries", "Team leads approve requests on text entries", "allow", ["approve"], ["lead"], SAME_PROJECT),
+    rule("text.entry", "leads-approve-entries", "Team leads approve requests on text entries", "allow", ["approve"], ["*"], LEADS),
     rule("crypto.envelope", "create-for-sharers", "Anyone may create key shares", "allow", ["create"], ["*"]),
     rule("crypto.envelope", "release-to-recipient", "A key share is handed to the person it is for", "allow", ["release"], ["*"],
       "resource.attributes.recipient_principal == principal.id"),
@@ -86,30 +90,55 @@ window.FGA_MOCK = (() => {
     rule("network.destination", "members-send-approved", "Members send data to approved addresses", "allow", ["send"], ["member"], "resource.attributes.approved == true"),
     rule("agent.tool", "members-use-mcp", "Members use the AI assistant tools", "allow", ["discover", "invoke"], ["member"], 'resource.attributes.kind == "mcp"'),
     rule("agent.tool", "members-use-tools", "Members run registered tools", "allow", ["discover", "invoke"], ["member"], 'resource.attributes.kind == "executor"'),
-    rule("agent.tool", "leads-settle-tools", "Team leads settle tool runs", "allow", ["approve", "resolve", "write-off"], ["lead"], 'resource.attributes.kind == "executor"'),
+    rule("agent.tool", "leads-settle-tools", "Team leads settle tool runs", "allow", ["approve", "resolve", "write-off"], ["*"], `${LEADS_ANY} && resource.attributes.kind == "executor"`),
+    rule("directory.project", "anyone-creates-projects", "People with the right may create projects", "allow", ["create"], ["*"]),
+    rule("directory.project", "leads-run-projects", "Team leads run their projects", "allow", ["create-space", "manage-members", "manage-leads", "rename"], ["*"], LEADS),
   ];
 
-  // Permission sets are the most an identity may ever do, before any rule
-  // is asked (fga-admin grant).
+  // Rights are the most a person may ever do, whatever the rules say: each
+  // is a set of fga capabilities (fga-admin grant -type -actions). The rules
+  // then decide where a right applies: in which projects, on whose files.
+  const right = (name, help, caps) => ({ name, help, builtin: true, caps });
+  const APPROVABLE = ["storage.bucket", "storage.object", "document.version", "document.text_unit", "document.derived", "text.entry"];
   const permSets = {
-    storage: { name: "Standard file access", builtin: true, caps: {
-      "storage.bucket": ["create-object", "list", "share"],
-      "storage.object": ["read", "stat", "discover", "read-history", "discover-history", "new-version", "delete", "delete-version",
-        "share", "label", "relabel", "propose-label", "export"],
-      "crypto.envelope": ["create", "release", "retire"],
-      "document.version": ["read-units", "raw-read", "discover", "share", "export"],
-      "document.text_unit": ["read", "share", "label", "relabel", "propose-label", "export-key"],
-      "document.derived": ["deliver", "declassify", "label", "relabel", "new-version", "share"],
-      "text.entry": ["read", "use-in-model", "update", "share"],
-      "crypto.recipient": ["enroll", "activate", "receive-key", "revoke", "discover"],
-      "crypto.signing-key": ["discover", "enroll", "activate", "retire"],
-      "agent.tool": ["discover", "invoke"],
-    } },
-    approver: { name: "Approvals", builtin: true, caps: Object.fromEntries(["storage.bucket", "storage.object", "document.text_unit",
-      "document.derived", "document.version", "text.entry", "crypto.envelope", "crypto.recipient", "crypto.signing-key", "agent.tool"]
-      .map(t => [t, ["approve"]])) },
-    "manage-buckets": { name: "Manage spaces", help: "Change the settings of spaces", caps: { "storage.bucket": ["manage"] } },
-    "send-hooks": { name: "Send to external addresses", help: "Send data to approved web addresses", caps: { "network.destination": ["send"] } },
+    open: right("Open files", "Find, see and open what the rules allow them, and keep their own keys", {
+      "storage.bucket": ["list"], "storage.object": ["read", "stat", "discover", "read-history", "discover-history"],
+      "document.version": ["read-units", "discover"], "document.text_unit": ["read"], "document.derived": ["deliver"], "text.entry": ["read"],
+      "crypto.envelope": ["release"], "crypto.recipient": ["enroll", "activate", "receive-key", "revoke", "discover"], "crypto.signing-key": ["discover"] }),
+    upload: right("Upload and replace", "Add files and new versions of them", {
+      "storage.bucket": ["create-object"], "storage.object": ["new-version"], "document.derived": ["new-version"], "text.entry": ["update"] }),
+    delete: right("Delete", "Delete files and their old versions", { "storage.object": ["delete", "delete-version"] }),
+    share: right("Share with others", "Give other people access to single files", {
+      "storage.bucket": ["share"], "storage.object": ["share"], "document.version": ["share"], "document.text_unit": ["share"],
+      "document.derived": ["share"], "text.entry": ["share"], "crypto.envelope": ["create", "retire"] }),
+    sensitivity: right("Change sensitivity", "Mark things more or less sensitive; less needs an approval", {
+      "storage.object": ["label", "relabel", "propose-label"], "document.text_unit": ["label", "relabel", "propose-label"],
+      "document.derived": ["label", "relabel", "declassify"] }),
+    export: right("Take copies out", "Export files and download originals", {
+      "storage.object": ["export"], "document.version": ["raw-read", "export"], "document.text_unit": ["export-key"] }),
+    approve: right("Approve requests", "Decide on requests that need a second person", {
+      ...Object.fromEntries(APPROVABLE.map(t => [t, ["approve"]])), "agent.tool": ["approve", "resolve", "write-off"] }),
+    ai: right("Use AI and tools", "Run tools, and let AI assistants work with their files", { "agent.tool": ["discover", "invoke"], "text.entry": ["use-in-model"] }),
+    send: right("Send data outside", "Send data to approved external addresses", { "network.destination": ["send"] }),
+    "manage-buckets": right("Manage spaces", "Change the settings of spaces", { "storage.bucket": ["manage"] }),
+    "create-projects": right("Create projects", "Start new projects, and lead them", { "directory.project": ["create"] }),
+    "lead-projects": right("Run projects they lead", "Create spaces and choose members and team leads, in projects they lead", {
+      "directory.project": ["create-space", "manage-members", "manage-leads", "rename"] }),
+    signing: right("Sign files", "Register and use their own signing keys", { "crypto.signing-key": ["enroll", "activate", "retire"] }),
+  };
+
+  // Profiles are ready-made sets of rights to start from; a person's rights
+  // can then differ one by one. fga knows only the rights.
+  const MEMBER = ["open", "upload", "delete", "share", "sensitivity", "ai", "signing"];
+  const profiles = {
+    none: { name: "No rights", help: "Can sign in, and do nothing else", rights: [] },
+    reader: { name: "Reader", help: "Finds and opens what the rules allow", rights: ["open"] },
+    member: { name: "Member", help: "Works with files: opens, uploads, deletes and shares", rights: MEMBER },
+    "member-no-share": { name: "Member who cannot share", help: "Like a member, but never gives others access", rights: MEMBER.filter(r => r !== "share") },
+    lead: { name: "Team lead", help: "A member who also approves requests and runs projects",
+      rights: [...MEMBER, "approve", "export", "manage-buckets", "create-projects", "lead-projects"] },
+    steward: { name: "File steward", help: "Gives people access to single files, and opens nothing", rights: ["open", "share"] },
+    agent: { name: "AI agent", help: "Opens files and runs tools for the people it acts for", rights: ["open", "ai"] },
   };
 
   const types = {};
@@ -121,20 +150,23 @@ window.FGA_MOCK = (() => {
   // ---------------------------------------------------------------- people
 
   const projects = [
-    { id: "apollo", name: "Apollo" }, { id: "borealis", name: "Borealis" }, { id: "cobalt", name: "Cobalt" }, { id: "delta", name: "Delta" },
-    { id: "finance", name: "Finance" }, { id: "legal", name: "Legal" }, { id: "hr", name: "People and HR" }, { id: "marketing", name: "Marketing" },
+    { id: "apollo", name: "Apollo", description: "The new customer portal" }, { id: "borealis", name: "Borealis", description: "Sensor research" },
+    { id: "cobalt", name: "Cobalt", description: "Design system and releases" }, { id: "delta", name: "Delta", description: "Data and models" },
+    { id: "finance", name: "Finance", description: "Budgets, forecasts and the board" }, { id: "legal", name: "Legal", description: "Contracts and agreements" },
+    { id: "hr", name: "People and HR", description: "Handbook and payroll" }, { id: "marketing", name: "Marketing", description: "Campaigns and brand" },
   ];
   const projectWeights = [["apollo", 50], ["borealis", 45], ["cobalt", 40], ["delta", 35], ["finance", 30], ["legal", 20], ["hr", 25], ["marketing", 35]];
 
-  const person = (id, roles, projs, grants, extra = {}) =>
-    ({ id, kind: "user", roles, attributes: { projects: projs }, grants, status: "active", ...extra });
+  const rightsOf = (profile, ...extra) => [...profiles[profile].rights, ...extra];
+  const person = (id, roles, projs, grants, extra = {}, leads = []) =>
+    ({ id, kind: "user", roles, attributes: { projects: projs, ...(leads.length ? { leads } : {}) }, grants, status: "active", ...extra });
   const principals = [
-    person("alice", ["member"], ["apollo"], ["storage"]),
-    person("bob", ["member"], ["apollo"], ["storage", "send-hooks"]),
-    person("lena", ["member", "lead"], ["apollo"], ["storage", "approver", "manage-buckets"]),
-    person("carl", ["member"], ["borealis"], ["storage"]),
-    person("sam", ["steward"], ["apollo", "borealis", "finance"], ["storage"]),
-    person("gus", ["guest"], ["apollo"], []),
+    person("alice", ["member"], ["apollo"], rightsOf("member", "create-projects", "lead-projects")),
+    person("bob", ["member"], ["apollo"], rightsOf("member", "send")),
+    person("lena", ["member"], ["apollo"], rightsOf("lead"), {}, ["apollo"]),
+    person("carl", ["member"], ["borealis"], rightsOf("member-no-share")),
+    person("sam", ["steward"], ["apollo", "borealis", "finance"], rightsOf("steward")),
+    person("gus", ["guest"], ["apollo"], rightsOf("none")),
   ];
   const FIRST = ["anna", "omar", "mei", "lukas", "sara", "jonas", "amira", "felix", "nina", "tariq", "elena", "viktor", "hana", "diego", "ingrid",
     "kofi", "leila", "mateo", "olga", "pavel", "rosa", "sven", "yuki", "zara", "adam", "bea", "chen", "dara", "emil", "fatima", "goran", "hugo",
@@ -150,20 +182,27 @@ window.FGA_MOCK = (() => {
     taken.add(id);
     const first = weighted(projectWeights), projs = chance(0.12) ? [first, weighted(projectWeights)] : [first];
     const r = rnd();
-    let roles = ["member"], grants = ["storage"];
-    if (r < 0.065) { roles = ["member", "lead"]; grants = ["storage", "approver", ...(chance(0.5) ? ["manage-buckets"] : [])]; }
-    else if (r < 0.095) roles = ["member", "contractor"];
-    else if (r < 0.11) roles = ["auditor"];
-    else if (r < 0.125) { roles = ["guest"]; grants = []; }
-    else if (r < 0.135) roles = ["steward"];
-    if (roles.includes("member") && chance(0.04)) grants.push("send-hooks");
-    principals.push(person(id, roles, [...new Set(projs)], grants, chance(0.02) ? { status: "disabled" } : {}));
+    let roles = ["member"], grants = rightsOf(chance(0.08) ? "member-no-share" : "member"), leads = [];
+    if (r < 0.065) { grants = rightsOf("lead"); leads = [first]; }
+    else if (r < 0.095) { roles = ["member", "contractor"]; grants = rightsOf("member-no-share"); }
+    else if (r < 0.11) { roles = ["auditor"]; grants = rightsOf("reader"); }
+    else if (r < 0.125) { roles = ["guest"]; grants = rightsOf("none"); }
+    else if (r < 0.135) { roles = ["steward"]; grants = rightsOf("steward"); }
+    if (roles.includes("member") && chance(0.04)) grants.push("send");
+    principals.push(person(id, roles, [...new Set(projs)], grants, chance(0.02) ? { status: "disabled" } : {}, leads));
   }
   const agentIds = ["agent-7", "agent-12", "agent-21", "agent-33", "agent-40", "agent-51", "agent-64", "agent-78"];
-  for (const id of agentIds) principals.push({ id, kind: "agent", roles: ["agent"], attributes: {}, grants: ["storage"], status: "active" });
+  for (const id of agentIds) principals.push({ id, kind: "agent", roles: ["agent"], attributes: {}, grants: rightsOf("agent"), status: "active" });
 
   const members = proj => principals.filter(p => p.kind === "user" && p.status === "active" && p.roles.includes("member") &&
     p.attributes.projects.includes(proj));
+  // Every project has at least one team lead.
+  for (const pr of projects) {
+    if (principals.some(p => (p.attributes.leads || []).includes(pr.id))) continue;
+    const p = members(pr.id)[0];
+    p.attributes.leads = [...(p.attributes.leads || []), pr.id];
+    p.grants = [...new Set([...p.grants, ...profiles.lead.rights])];
+  }
 
   const delegations = [
     { id: "dlg-bob", actor: "agent-7", subject: "bob", audience: "local-dev", expires: "2026-11-02T11:00:00Z", status: "active", grants: {
@@ -310,7 +349,7 @@ window.FGA_MOCK = (() => {
   const state = {
     org: { id: "t-acme", name: "Acme (demo)" },
     bundle: { epoch: 1, keyId: "publisher-1", activated: "2026-11-01T09:58:00Z", labels },
-    rules, permSets, types, projects, principals, delegations, buckets, objects, shares, approvals, tools, destinations, mcp, servers,
+    rules, permSets, profiles, types, projects, principals, delegations, buckets, objects, shares, approvals, tools, destinations, mcp, servers,
     audit: [], roleInfo: {}, extraRoles: [],
   };
   return { initialState: () => structuredClone(state), now: NOW };

@@ -18,6 +18,7 @@ window.FGA_WORDS = (() => {
     "crypto.signing-key": ["Signing key", "Signing keys", "a signing key", "A key that proves who made a file or a label"],
     "network.destination": ["External address", "External addresses", "an external address", "A web address outside fga that tools may send data to"],
     "agent.tool": ["Tool", "Tools", "a tool", "An action people or AI agents can run, such as sending a notification"],
+    "directory.project": ["Project", "Projects", "a project", "A team with its own spaces: its members use the files in them"],
   };
 
   const ACTIONS = {
@@ -56,10 +57,15 @@ window.FGA_WORDS = (() => {
     invoke: ["Run", "Run it"],
     resolve: ["Resolve", "Settle a run whose result is not known"],
     "write-off": ["Write off", "Accept the cost of a failed run"],
+    "create-space": ["Create spaces", "Create a new space in the project"],
+    "manage-members": ["Add and remove members", "Choose who belongs to the project"],
+    "manage-leads": ["Choose team leads", "Choose who leads the project"],
+    rename: ["Rename", "Change its name and description"],
   };
   const TYPE_ACTIONS = {
     "document.text_unit": { read: ["Read", "Read this section"] },
     "text.entry": { read: ["Read", "Read the entry"] },
+    "directory.project": { create: ["Create projects", "Start a new project, and lead it"] },
   };
 
   const ROLES = {
@@ -73,10 +79,9 @@ window.FGA_WORDS = (() => {
     steward: ["File steward", "File stewards", "Gives people access to single files, without being able to open them"],
   };
 
-  const SETS = {
-    storage: ["Standard file access", "Everything a project member may need: files, documents, keys and tools"],
-    approver: ["Approvals", "Deciding on requests that need a second person"],
-  };
+  // Names of rights fga itself defines; the console's own rights carry
+  // their names in the data.
+  const SETS = {};
 
   const LABELS = {
     public: ["Public", "Anyone in the organisation may know it"],
@@ -92,7 +97,7 @@ window.FGA_WORDS = (() => {
 
   const STAGES = {
     default: "No rule allows it",
-    bound: "None of their permission sets includes it",
+    bound: "Not one of their rights",
     disabled: "The person is disabled",
     unknown: "Unknown person",
   };
@@ -117,7 +122,11 @@ window.FGA_WORDS = (() => {
     "document.text_unit": ["read"], "text.entry": ["read"], "document.derived": ["deliver"],
   };
   const CONDITIONS = [
-    { id: "project", text: "it belongs to one of their projects", expr: "resource.attributes.project in principal.attributes.projects", types: PROJECT_TYPES },
+    { id: "project", text: "it belongs to one of their projects", expr: "resource.attributes.project in principal.attributes.projects", types: PROJECT_TYPES,
+      textFor: { "directory.project": "they are a member of it" } },
+    { id: "leads", text: "they lead its project", expr: "resource.attributes.project in principal.attributes.leads",
+      types: [...PROJECT_TYPES, "directory.project"], textFor: { "directory.project": "they lead it" } },
+    { id: "leads-any", text: "they lead a project", expr: "has(principal.attributes.leads) && principal.attributes.leads != []", types: ["agent.tool"] },
     { id: "owner", text: "they own it", expr: "resource.attributes.owner == principal.id", types: OWNED_TYPES },
     { id: "shared", text: "it was shared with them", oneAction: true, types: Object.keys(GRANTABLE),
       expr: a => `has(resource.attributes.shared_with) && principal.id in resource.attributes.shared_with${sharedKey(a)}` },
@@ -133,6 +142,8 @@ window.FGA_WORDS = (() => {
   ];
   const PATTERNS = [
     [/^resource\.attributes\.project in principal\.attributes\.projects$/, "project"],
+    [/^resource\.attributes\.project in principal\.attributes\.leads$/, "leads"],
+    [/^has\(principal\.attributes\.leads\) && principal\.attributes\.leads != \[\]$/, "leads-any"],
     [/^resource\.attributes\.owner == principal\.id$/, "owner"],
     [/^(?:has\(resource\.attributes\.shared_with\) && )?principal\.id in resource\.attributes\.shared_with(?:\.[a-z]+|\["[a-z-]+"\])$/, "shared"],
     [/^resource\.attributes\.label_rank < 3$/, "below-restricted"],
@@ -221,12 +232,13 @@ window.FGA_WORDS = (() => {
 
   const condition = id => CONDITIONS.find(c => c.id === id);
   const conditionsFor = t => CONDITIONS.filter(c => c.types.includes(t));
+  const condText = (c, t) => (c.textFor && c.textFor[t]) || c.text;
 
   // describe gives a condition in words: null when the rule always applies.
-  function describe(expr) {
+  function describe(expr, t) {
     const m = matchCondition(expr);
     if (!m.ids.length && !m.custom) return null;
-    const phrases = m.ids.map(id => condition(id).text);
+    const phrases = m.ids.map(id => condText(condition(id), t));
     if (m.custom) phrases.push("a custom condition holds");
     return { text: phrases.join(" and "), custom: m.custom };
   }
@@ -249,7 +261,7 @@ window.FGA_WORDS = (() => {
       who, verb: r.effect === "deny" ? "may never" : "may",
       kind: r.set === "ceiling" ? "Hard limit" : r.effect === "deny" ? "Never allows" : "Allows",
       actions: r.actions.map(a => action(a, r.type).label), what: type(r.type).a,
-      when: describe(r.when),
+      when: describe(r.when, r.type),
     };
   }
 
@@ -262,7 +274,7 @@ window.FGA_WORDS = (() => {
 
   return {
     TYPES, ACTIONS, ROLES, LABELS, GRANTABLE, CONDITIONS, custom, sharedKey, honorsShare,
-    type, action, role, set, label, encryption, fileKind, describe, matchCondition, condition, conditionsFor, conditionExpr,
+    type, action, role, set, label, encryption, fileKind, describe, matchCondition, condition, conditionsFor, condText, conditionExpr,
     rule, ruleTitle, stage: s => STAGES[s] || human(s), human, plural, cap,
   };
 })();

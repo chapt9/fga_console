@@ -24,26 +24,42 @@ and open http://127.0.0.1:8080.
 The demo organisation has about 300 people in eight projects, a dozen
 spaces and some 250 files of different kinds. Sign in as:
 
-- alice, bob or carl: members who share their own files;
-- lena: a team lead, who approves requests;
+- alice: a member who may also create projects of their own;
+- bob: a member who may also send data outside;
+- carl: a member without the right to share;
+- lena: team lead of Apollo, who approves requests and runs the project;
 - sam: a file steward, who can give people access to single files in
   their projects without being able to open them;
-- gus: a guest;
-- the administrator, for people, AI agents, roles, permission sets,
+- gus: a guest with no rights at all;
+- the administrator, for people, rights, roles, AI agents, projects,
   spaces, tools, rules, servers, the audit log and the access graph.
+
+What someone may do is the smaller of two things: their **rights** (the
+most they may ever do, such as sharing or creating projects, given per
+person or from a profile) and the **rules** (where a right applies: in
+which projects, on whose files). Team leads are chosen per project.
 
 Every page uses plain words from `web/words.js`; "Technical names" shows
 fga's own names beside them. The access graph has three views (rules, one
-person, one file) so it stays readable with hundreds of people.
+person, one file) so it stays readable with hundreds of people. Giving
+access takes many files at once: filters with "Choose all", whole folders,
+shift-click ranges and several spaces, and can be taken back as a batch.
 
 ### Needs fga changes
 
 The mockup shows these, marked "Needs a change in fga" where they appear:
 
+- projects as something fga knows, with operations people may be allowed:
+  create a project (and lead it), add and remove members, choose team
+  leads, create spaces in it; a new project can never take an existing
+  project's name;
 - removing a space, a tool or an external address, and turning the AI
   assistant tools off;
 - a remote admin API for tools (today `fga-tools` commands on its host);
 - a place in the signed rules for role names and descriptions.
+
+Rights work with fga as it is: each is a set of capabilities
+(`fga-admin grant -type -actions`); profiles exist only in the console.
 
 Server settings are never pushed: the console checks them and exports
 the settings file, which is put in place on the server before a restart.

@@ -15,6 +15,7 @@
   const A = window.FGA_APP = { S, W, P, baseline, me: null, tech: false, acts: {}, routes: {}, changes: [] };
   const acts = A.acts;
   W.custom.roles = S.roleInfo;
+  S.batches = [];
 
   // ---------------------------------------------------------------- helpers
 
@@ -127,8 +128,8 @@
   const rolesText = id => {
     const p = person(id);
     if (!p) return "";
-    const projects = p.attributes.projects || [];
-    return `${p.roles.map(r => W.role(r).one).join(", ") || "No role"}${projects.length ? ` · ${projects.map(projectName).join(", ")}` : ""}`;
+    const projects = p.attributes.projects || [], leads = p.attributes.leads || [];
+    return `${p.roles.map(r => W.role(r).one).join(", ") || "No role"}${projects.length ? ` · ${projects.map(id => projectName(id) + (leads.includes(id) ? " (lead)" : "")).join(", ")}` : ""}`;
   };
   const people = () => S.principals.filter(p => p.kind === "user");
   const matchPerson = (p, q) => !q || p.id.includes(q.toLowerCase()) || displayName(p.id).toLowerCase().includes(q.toLowerCase());
@@ -168,7 +169,7 @@
   }
 
   // decideFor decides for an agent acting for a person: the rules see the
-  // person, and the agent may do only what both its own permission sets and
+  // person, and the agent may do only what both its own rights and
   // its permission to act allow.
   function decideFor(dlgId, action, resource) {
     const d = S.delegations.find(x => x.id === dlgId), agent = person(d.actor), subject = person(d.subject);
@@ -180,6 +181,7 @@
   }
 
   const whyText = res => (res.rule ? ruleTitle(res.rule) : W.stage(res.stage));
+  const reason = (res, verb) => res.stage === "bound" ? `You don't have the right to ${verb}` : `You may not ${verb}: ${whyText(res)}`;
 
   // plainTrace rewrites a decision's steps in plain words.
   function plainTrace(res, pid, action, type) {
@@ -187,8 +189,9 @@
     const steps = [];
     if (res.stage === "disabled") return [{ ok: false, text: `${who} is disabled` }];
     if (res.stage === "unknown") return res.trace;
-    if (res.stage === "bound") return [{ ok: false, text: `None of ${who}'s permission sets includes "${what}" on ${thing}` }];
-    steps.push({ ok: true, text: `A permission set of ${who} includes "${what}" on ${thing}` });
+    const things = W.type(type).many.toLowerCase();
+    if (res.stage === "bound") return [{ ok: false, text: `${who} does not have the right to "${what}" ${things}` }];
+    steps.push({ ok: true, text: `${who} has the right to "${what}" ${things}` });
     if (res.stage === "ceiling") steps.push({ ok: false, text: `Hard limit: ${ruleTitle(res.rule)}` });
     else if (res.stage === "deny") steps.push({ ok: false, text: `Forbidden by "${ruleTitle(res.rule)}"; a forbidding rule always wins` });
     else if (res.stage === "allow") {
@@ -321,7 +324,8 @@
   const brand = () => `<div class="brand"><span class="brand-mark">${icon("mark")}</span><span>fga console<small>${esc(S.org.name)}${tech(S.org.id)}</small></span></div>`;
 
   function navLink(path, ic, label, count) {
-    return `<a href="#${path}" class="${currentPath() === path ? "active" : ""}" title="${esc(label)}">${icon(ic)}<span class="lbl">${esc(label)}</span>` +
+    const cur = currentPath().replace(/\/project$/, "/projects");
+    return `<a href="#${path}" class="${cur === path ? "active" : ""}" title="${esc(label)}">${icon(ic)}<span class="lbl">${esc(label)}</span>` +
       `${count ? `<span class="count">${count}</span>` : ""}</a>`;
   }
 
@@ -329,12 +333,12 @@
     const me = A.me;
     const nav = me.admin
       ? `<div class="nav-section">Organisation</div>${navLink("/admin", "home", "Overview")}` +
-        `<div class="nav-section">People</div>${navLink("/admin/people", "users", "People")}${navLink("/admin/agents", "bot", "AI agents")}` +
-        `${navLink("/admin/roles", "role", "Roles")}${navLink("/admin/permissions", "key", "Permission sets")}` +
-        `<div class="nav-section">Content</div>${navLink("/admin/spaces", "bucket", "Spaces")}${navLink("/admin/tools", "bolt", "Tools")}` +
+        `<div class="nav-section">People</div>${navLink("/admin/people", "users", "People")}${navLink("/admin/rights", "key", "Rights")}` +
+        `${navLink("/admin/roles", "role", "Roles")}${navLink("/admin/agents", "bot", "AI agents")}` +
+        `<div class="nav-section">Content</div>${navLink("/admin/projects", "folder", "Projects")}${navLink("/admin/spaces", "bucket", "Spaces")}${navLink("/admin/tools", "bolt", "Tools")}` +
         `<div class="nav-section">Rules</div>${navLink("/admin/rules", "policy", "Rules")}${navLink("/admin/graph", "graph", "Access graph")}` +
         `<div class="nav-section">System</div>${navLink("/admin/servers", "server", "Servers")}${navLink("/admin/audit", "audit", "Audit log")}`
-      : `<div class="nav-section">Workspace</div>${navLink("/files", "files", "Files")}` +
+      : `<div class="nav-section">Workspace</div>${navLink("/files", "files", "Files")}${navLink("/projects", "folder", "Projects")}` +
         `${navLink("/approvals", "inbox", "Approvals", toApprove().length)}${navLink("/activity", "activity", "Activity")}`;
     app.innerHTML = `<div class="shell${opts.compact ? " compact" : ""}"><aside class="sidebar">${brand()}<nav class="nav">${nav}</nav>` +
       `<div class="me">${avatar(me.id)}<div><b>${esc(displayName(me.id))}</b>` +
@@ -472,19 +476,24 @@
     const spaceRow = b => {
       const n = S.objects.filter(o => o.bucket === b.name && canSee(o)).length;
       return `<a class="space-row ${pick === b.name ? "on" : ""}" href="#/files?b=${encodeURIComponent(b.name)}">${icon(b.mode === "client" ? "lock" : "bucket")}` +
-        `<span class="grow"><b>${esc(b.name)}</b><small>${esc(projectName(b.project))}</small></span><span class="count-pill">${n}</span></a>`;
+        `<span class="grow"><b>${esc(b.name)}</b><small><span class="wide-only">${esc(W.encryption(b.mode).name)}</span><span class="strip-only">Project ${esc(projectName(b.project))}</span></small></span>` +
+        `<span class="count-pill">${n}</span></a>`;
     };
+    const byProject = S.projects.filter(x => visible.some(b => b.project === x.id))
+      .map(x => `<div class="spaces-head">Project ${esc(x.name)}</div>${visible.filter(b => b.project === x.id).map(spaceRow).join("")}`).join("");
+    const gave = S.shares.some(x => x.grantor === me && Date.parse(x.expires) > clock());
     const body = `<div class="page wide">${pageHead("Files", "The spaces and files you may see. What you may not do is greyed out, with the reason on hover.",
-      (anyShare ? `<button class="btn" data-act="giveAccess">${icon("share")}Give access</button>` : "") +
+      (gave ? `<button class="btn ghost" data-act="myShares">${icon("users")}Access you gave</button>` : "") +
+      (anyShare ? `<button class="btn" data-act="giveAccess" data-space="${esc(bucket ? bucket.name : "")}">${icon("share")}Give access</button>` : "") +
       (canUpload ? `<button class="btn primary" data-act="upload" data-b="${esc(bucket.name)}" data-f="${esc(folder)}">${icon("upload")}Upload</button>` : ""))}` +
-      (tabs.length ? `<div class="files-layout"><nav class="card spaces" aria-label="Spaces"><div class="spaces-head">Spaces</div>${visible.map(spaceRow).join("")}` +
+      (tabs.length ? `<div class="files-layout"><nav class="card spaces" aria-label="Spaces">${byProject}` +
         (sharedIn.length ? `<a class="space-row ${pick === "~shared" ? "on" : ""}" href="#/files?b=~shared">${icon("share")}<span class="grow"><b>Shared with you</b>` +
           `<small>single files</small></span><span class="count-pill">${sharedIn.length}</span></a>` : "") + `</nav>` +
         `<section class="card browser"><div class="browser-bar"><div class="crumbs">${crumbs(bucket, folder, pick)}</div>` +
         `<input class="input search" id="filesQ" placeholder="${bucket ? `Search in ${esc(bucket.name)}` : "Search"}" value="${esc(filesQ)}" data-on-input="filesSearch" aria-label="Search files"></div>` +
         `<div id="fileRows">${fileRows(bucket, folder, sharedIn)}</div></section></div>`
         : `<div class="card"><div class="empty">${icon("files")}<div>No space lets you in yet. Ask an administrator, or ask someone to share a file with you.</div></div></div>`) + `</div>`;
-    shell("Files", bucket ? `${esc(bucket.name)} · ${esc(projectName(bucket.project))} · ${esc(W.encryption(bucket.mode).name)}` : "", body);
+    shell("Files", bucket ? `Space ${esc(bucket.name)}, in project ${esc(projectName(bucket.project))}` : "", body);
     acts.filesSearch = (d, el) => { filesQ = el.value; document.getElementById("fileRows").innerHTML = fileRows(bucket, folder, sharedIn); };
   }
   A.routes["/files"] = renderFiles;
@@ -518,7 +527,7 @@
     const me = A.me.id, r = objRes(o);
     const deny = (action, verb) => {
       const res = decide(me, action, r);
-      return res.allowed ? "" : `disabled title="${esc(`You may not ${verb}: ${whyText(res)}`)}"`;
+      return res.allowed ? "" : `disabled title="${esc(reason(res, verb))}"`;
     };
     const shares = canShare(o).allowed ? activeShares(o) : [];
     return `<tr><td><div class="obj">${fileIcon(o)}<div class="min0"><b class="fname">${esc(showPath ? `${o.bucket}/${o.key}` : baseName(o.key))}</b>` +
@@ -579,7 +588,7 @@
         `<div class="chips">${s.actions.map(a => actChip(a, objType(o))).join("")}</div><div class="muted small">until ${day(s.expires)} · given by ${esc(displayName(s.grantor))}</div></div>` +
         (mayShare ? `<button class="btn sm danger" data-act="unshare" data-b="${esc(o.bucket)}" data-k="${esc(o.key)}" data-id="${esc(s.grantee)}">Remove</button>` : "") +
         `</div>`).join("")}</div>` : `<p class="muted small">Not shared with anyone.</p>`),
-      `<button class="btn danger" data-act="deleteFile" data-b="${esc(o.bucket)}" data-k="${esc(o.key)}" ${mayDelete.allowed ? "" : `disabled title="${esc(`You may not delete it: ${whyText(mayDelete)}`)}"`}>${icon("trash", "sm")}Delete</button>` +
+      `<button class="btn danger" data-act="deleteFile" data-b="${esc(o.bucket)}" data-k="${esc(o.key)}" ${mayDelete.allowed ? "" : `disabled title="${esc(reason(mayDelete, "delete it"))}"`}>${icon("trash", "sm")}Delete</button>` +
       (o.kind === "object" ? `<button class="btn" data-act="label" data-b="${esc(o.bucket)}" data-k="${esc(o.key)}" ${labelAllowed ? "" : 'disabled title="You may not change its sensitivity"'}>${icon("tag", "sm")}Sensitivity</button>` : "") +
       `<span class="spacer"></span>` +
       (mayShare ? `<button class="btn primary" data-act="giveAccess" data-b="${esc(o.bucket)}" data-k="${esc(o.key)}">${icon("share")}Give access</button>` : ""));
@@ -679,12 +688,16 @@
   const NOT_SHAREABLE = [["upload", "Upload"], ["replace", "Replace"], ["delete", "Delete"], ["sensitivity", "Change sensitivity"], ["approve", "Approve requests"]];
 
   let ga = null;
+  // A shift-click on a file's box chooses the range since the last one.
+  document.addEventListener("click", e => { if (ga && e.target.matches && e.target.matches("#gaList input[data-id]")) ga.shift = e.shiftKey; }, true);
   acts.giveAccess = d => {
     const o = d.b ? findObj(d.b, d.k) : null;
     const spaces = S.buckets.filter(b => S.objects.some(x => x.bucket === b.name && canShare(x).allowed));
     if (!spaces.length) return toast("There is no file you may share", "bad");
-    ga = { who: null, whoQ: "", space: o ? o.bucket : spaces[0].name, folder: o ? folderOf(o.key) : "", q: "",
-      sel: new Set(o ? [fid(o)] : []), opts: new Set(["find", "details", "open"]), days: 7, spaces };
+    const here = spaces.find(b => b.name === d.space);
+    ga = { who: null, whoQ: "", space: o ? o.bucket : here ? here.name : spaces[0].name, folder: o ? folderOf(o.key) : "", q: "",
+      sel: new Set(o ? [fid(o)] : []), opts: new Set(["find", "details", "open"]), days: 7, spaces,
+      f: { kind: "", label: "", mine: "", days: "" }, visible: [], last: null, shift: false };
     openDrawer("Give access", `<div id="ga"></div>`, `<span class="grow muted small" id="gaFoot"></span><button class="btn" data-act="closeDrawer">Cancel</button>` +
       `<button class="btn primary" id="gaGo" data-act="gaGive">${icon("share")}Give access</button>`, { wide: true, noFocus: true });
     gaRender();
@@ -706,7 +719,7 @@
     const foot = document.getElementById("gaFoot");
     if (foot) foot.textContent = !ga.who ? "Choose a person" : !ga.sel.size ? "Choose at least one file" : !ga.opts.size ? "Choose what they may do" : "";
   }
-  const stepHead = (n, title, right = "") => `<div class="step-head"><span class="num">${n}</span><h4>${esc(title)}</h4>${right ? `<span class="right">${right}</span>` : ""}</div>`;
+  const stepHead = (n, title, right = "") => `<div class="step-head"><span class="step-num">${n}</span><h4>${esc(title)}</h4>${right ? `<span class="right">${right}</span>` : ""}</div>`;
 
   function gaWho() {
     if (ga.who) {
@@ -726,52 +739,100 @@
   acts.gaPickWho = d => { ga.who = d.id; gaRender(); };
   acts.gaWhoClear = () => { ga.who = null; gaRender(); const q = document.getElementById("gaWhoQ"); if (q) q.focus(); };
 
+  const gaPool = () => S.objects.filter(o => o.bucket === ga.space && (canSee(o) || canShare(o).allowed));
+  const gaFiltering = () => !!(ga.q.trim() || ga.f.kind || ga.f.label || ga.f.mine || ga.f.days);
+  function gaMatches(o) {
+    const q = ga.q.trim().toLowerCase();
+    return (!q || o.key.toLowerCase().includes(q)) && (!ga.f.kind || W.fileKind(o.key).name === ga.f.kind) && (!ga.f.label || o.label === ga.f.label) &&
+      (!ga.f.mine || o.owner === A.me.id) && (!ga.f.days || Date.parse(o.modified) > clock() - Number(ga.f.days) * 864e5);
+  }
+  const gaCountText = () => {
+    const n = ga.sel.size, spaces = new Set([...ga.sel].map(id => id.slice(0, id.indexOf("|")))).size;
+    return n ? `${plural(n, "file")}${spaces > 1 ? ` in ${spaces} spaces` : ""} chosen` : "none chosen";
+  };
+
   function gaFiles() {
-    const n = ga.sel.size;
-    return stepHead(2, "Which files", n ? `<span class="badge accent">${plural(n, "file")} chosen</span>` : "") +
-      `<div class="browse-bar"><select class="input" data-on-change="gaSpace" aria-label="Space">${ga.spaces.map(b => `<option value="${esc(b.name)}" ${b.name === ga.space ? "selected" : ""}>` +
-        `${esc(b.name)} · ${esc(projectName(b.project))}</option>`).join("")}</select>` +
-      `<input class="input" id="gaQ" placeholder="Search in this space" value="${esc(ga.q)}" data-on-input="gaQ" autocomplete="off" aria-label="Search files"></div>` +
-      `<div id="gaList">${gaList()}</div>` +
-      (n ? `<div class="sel-chips">${[...ga.sel].slice(0, 6).map(id => { const o = objByFid(id); return `<span class="chip on">${esc(baseName(o.key))}` +
-        `<button class="x" data-act="gaUnpick" data-id="${esc(id)}" aria-label="Remove ${esc(baseName(o.key))}">×</button></span>`; }).join("")}` +
-        `${n > 6 ? `<span class="chip more">and ${n - 6} more</span>` : ""}<button class="btn sm ghost" data-act="gaClear">Clear</button></div>` : "");
+    const pool = gaPool(), kinds = [...new Set(pool.map(o => W.fileKind(o.key).name))].sort();
+    const projects = S.projects.filter(p => ga.spaces.some(b => b.project === p.id));
+    const sel = (k, opts, all) => `<select class="input" data-on-change="gaFilter" data-k="${k}" aria-label="${esc(all)}"><option value="">${esc(all)}</option>` +
+      opts.map(([v, t]) => `<option value="${esc(v)}" ${String(ga.f[k]) === String(v) ? "selected" : ""}>${esc(t)}</option>`).join("") + `</select>`;
+    return stepHead(2, "Which files", `<span class="badge ${ga.sel.size ? "accent" : "muted"}" id="gaCount">${gaCountText()}</span>`) +
+      `<div class="browse-bar"><select class="input" data-on-change="gaSpace" aria-label="Space">${projects.map(p => `<optgroup label="Project ${esc(p.name)}">` +
+        ga.spaces.filter(b => b.project === p.id).map(b => `<option value="${esc(b.name)}" ${b.name === ga.space ? "selected" : ""}>${esc(b.name)}</option>`).join("") + `</optgroup>`).join("")}</select>` +
+      `<input class="input" id="gaQ" placeholder="Search by name" value="${esc(ga.q)}" data-on-input="gaQ" autocomplete="off" aria-label="Search files"></div>` +
+      `<div class="filter-row">${sel("kind", kinds.map(k => [k, k]), "Any kind")}${sel("label", S.bundle.labels.map(l => [l, W.label(l).name]), "Any sensitivity")}` +
+      `${sel("mine", [["1", "Only files I own"]], "Anyone's files")}${sel("days", [["7", "Changed in 7 days"], ["30", "Changed in 30 days"], ["90", "Changed in 90 days"]], "Changed any time")}</div>` +
+      `<div id="gaList">${gaList()}</div>` + (ga.sel.size ? gaChosen() : "");
+  }
+  function gaChosen() {
+    const ids = [...ga.sel];
+    return `<details class="chosen"><summary>Show the chosen files</summary><div class="chosen-list">${ids.slice(0, 60).map(id => {
+      const o = objByFid(id);
+      return `<div class="mini-row">${fileIcon(o)}<span class="grow min0"><span class="fname">${esc(o.bucket)}/${esc(o.key)}</span></span>` +
+        `<button class="btn sm ghost icon" data-act="gaUnpick" data-id="${esc(id)}" aria-label="Unchoose ${esc(baseName(o.key))}">${icon("x", "sm")}</button></div>`;
+    }).join("")}${ids.length > 60 ? `<div class="muted small pad">and ${ids.length - 60} more</div>` : ""}</div></details>` +
+      `<button class="btn sm ghost" data-act="gaClear">Clear the choice</button>`;
   }
   function gaList() {
-    const list = S.objects.filter(o => o.bucket === ga.space && canSee(o) || o.bucket === ga.space && canShare(o).allowed);
-    const q = ga.q.trim().toLowerCase();
-    const view = q ? { folders: [], files: list.filter(o => o.key.toLowerCase().includes(q)) } : folderView(list, ga.folder);
-    const crumbsHtml = q ? `<span class="muted small">Results for “${esc(ga.q)}”</span>`
+    const pool = gaPool(), filtering = gaFiltering();
+    const view = filtering ? { folders: [], files: pool.filter(gaMatches).sort((a, b) => a.key.localeCompare(b.key)) } : folderView(pool, ga.folder);
+    ga.visible = view.files.map(fid);
+    const shareable = view.files.filter(o => canShare(o).allowed), unpicked = shareable.filter(o => !ga.sel.has(fid(o)));
+    const inSpace = pool.filter(o => canShare(o).allowed);
+    const crumbsHtml = filtering ? `<span class="muted small">${plural(view.files.length, "file matches", "files match")} in ${esc(ga.space)}</span>`
       : [`<button class="linkish" data-act="gaFolder" data-f="">${esc(ga.space)}</button>`, ...(ga.folder ? ga.folder.split("/") : []).map((p, i, arr) =>
         i === arr.length - 1 ? `<b>${esc(p)}</b>` : `<button class="linkish" data-act="gaFolder" data-f="${esc(arr.slice(0, i + 1).join("/"))}">${esc(p)}</button>`)]
         .join(`<span class="sep">${icon("chevron", "sm")}</span>`);
-    const folderFiles = f => list.filter(o => o.key.startsWith(f + "/") && canShare(o).allowed);
+    const bulkBtns = filtering
+      ? (shareable.length ? `<button class="btn sm" data-act="gaPickAll" ${unpicked.length ? "" : "disabled"}>${icon("check", "sm")}Choose all ${shareable.length}</button>` +
+        (shareable.length > unpicked.length ? `<button class="btn sm ghost" data-act="gaUnpickAll">Unchoose them</button>` : "") : "")
+      : (!ga.folder && inSpace.length ? `<button class="btn sm ghost" data-act="gaPickSpace">Choose all ${inSpace.length} in the space</button>` : "");
+    const folderFiles = f => pool.filter(o => o.key.startsWith(f + "/") && canShare(o).allowed);
     const rows = view.folders.map(([f, n]) => {
       const files = folderFiles(f), all = files.length && files.every(o => ga.sel.has(fid(o)));
       return `<div class="brow"><label class="check"><input type="checkbox" data-on-change="gaFolderPick" data-f="${esc(f)}" ${all ? "checked" : ""} ${files.length ? "" : "disabled"}` +
-        ` aria-label="All files in ${esc(f)}"></label><span class="fk fk-folder">${icon("folder")}</span>` +
+        ` aria-label="Every file in ${esc(f)}"></label><span class="fk fk-folder">${icon("folder")}</span>` +
         `<button class="linkish grow" data-act="gaFolder" data-f="${esc(f)}"><b>${esc(f.split("/").pop())}</b> <span class="muted small">${plural(n, "file")}</span></button>` +
         `<button class="btn sm ghost icon" data-act="gaFolder" data-f="${esc(f)}" aria-label="Open folder">${icon("chevron")}</button></div>`;
     }).join("") + view.files.map(o => {
       const res = canShare(o);
-      return `<label class="brow ${res.allowed ? "" : "off"}" ${res.allowed ? "" : `title="${esc(`You may not share it: ${whyText(res)}`)}"`}>` +
+      return `<label class="brow ${res.allowed ? "" : "off"}" ${res.allowed ? "" : `title="${esc(reason(res, "share it"))}"`}>` +
         `<input type="checkbox" data-on-change="gaPick" data-id="${esc(fid(o))}" ${ga.sel.has(fid(o)) ? "checked" : ""} ${res.allowed ? "" : "disabled"}>` +
-        `${fileIcon(o)}<span class="grow min0"><b class="fname">${esc(q ? o.key : baseName(o.key))}</b><small>${esc(fileKindText(o))} · ${esc(displayName(o.owner))}</small></span>${labelChip(o.label)}</label>`;
+        `${fileIcon(o)}<span class="grow min0"><b class="fname">${esc(filtering ? o.key : baseName(o.key))}</b><small>${esc(fileKindText(o))} · ${esc(displayName(o.owner))}</small></span>${labelChip(o.label)}</label>`;
     }).join("");
-    return `<div class="crumbs small-crumbs">${crumbsHtml}</div><div class="browse">${rows || `<div class="muted small pad">Nothing here.</div>`}</div>` +
-      (view.folders.length ? `<p class="muted small">Ticking a folder chooses the files in it now; files added later are not included.</p>` : "");
+    return `<div class="list-head"><div class="crumbs small-crumbs">${crumbsHtml}</div><div class="btn-row">${bulkBtns}</div></div>` +
+      `<div class="browse">${rows || `<div class="muted small pad">Nothing here.</div>`}</div>` +
+      `<p class="muted small">${filtering ? "Choosing these takes the files that match now." : "Ticking a folder chooses every file in it and in its subfolders."} ` +
+      `Files added later are not included. Shift-click to choose a range.</p>`;
   }
-  acts.gaSpace = (d, el) => { ga.space = el.value; ga.folder = ""; ga.q = ""; gaRender(["gaFiles"]); };
-  acts.gaFolder = d => { ga.folder = d.f; ga.q = ""; gaRender(["gaFiles"]); };
-  acts.gaQ = (d, el) => { ga.q = el.value; document.getElementById("gaList").innerHTML = gaList(); };
-  acts.gaPick = (d, el) => { if (el.checked) ga.sel.add(d.id); else ga.sel.delete(d.id); gaRender(["gaFiles", "gaWhat", "gaResult"]); };
-  acts.gaUnpick = d => { ga.sel.delete(d.id); gaRender(["gaFiles", "gaWhat", "gaResult"]); };
-  acts.gaClear = () => { ga.sel.clear(); gaRender(["gaFiles", "gaWhat", "gaResult"]); };
+  const gaRefreshPicks = () => gaRender(["gaFiles", "gaWhat", "gaResult"]);
+  acts.gaSpace = (d, el) => { ga.space = el.value; ga.folder = ""; ga.q = ""; ga.last = null; gaRender(["gaFiles"]); };
+  acts.gaFolder = d => { ga.folder = d.f; ga.q = ""; ga.last = null; gaRender(["gaFiles"]); };
+  acts.gaFilter = (d, el) => { ga.f[d.k] = el.value; ga.last = null; gaRender(["gaFiles"]); };
+  acts.gaQ = (d, el) => { ga.q = el.value; ga.last = null; document.getElementById("gaList").innerHTML = gaList(); };
+  acts.gaPick = (d, el) => {
+    const i = ga.visible.indexOf(d.id);
+    if (ga.shift && ga.last !== null && i >= 0) {
+      for (const id of ga.visible.slice(Math.min(i, ga.last), Math.max(i, ga.last) + 1)) {
+        if (!canShare(objByFid(id)).allowed) continue;
+        if (el.checked) ga.sel.add(id); else ga.sel.delete(id);
+      }
+    } else if (el.checked) ga.sel.add(d.id); else ga.sel.delete(d.id);
+    ga.last = i;
+    ga.shift = false;
+    gaRefreshPicks();
+  };
+  const gaShown = () => gaPool().filter(gaMatches).filter(o => canShare(o).allowed);
+  acts.gaPickAll = () => { gaShown().forEach(o => ga.sel.add(fid(o))); gaRefreshPicks(); };
+  acts.gaUnpickAll = () => { gaShown().forEach(o => ga.sel.delete(fid(o))); gaRefreshPicks(); };
+  acts.gaPickSpace = () => { gaPool().filter(o => canShare(o).allowed).forEach(o => ga.sel.add(fid(o))); gaRefreshPicks(); };
+  acts.gaUnpick = d => { ga.sel.delete(d.id); gaRefreshPicks(); };
+  acts.gaClear = () => { ga.sel.clear(); gaRefreshPicks(); };
   acts.gaFolderPick = (d, el) => {
-    for (const o of S.objects.filter(x => x.bucket === ga.space && x.key.startsWith(d.f + "/") && canShare(x).allowed)) {
+    for (const o of gaPool().filter(x => x.key.startsWith(d.f + "/") && canShare(x).allowed)) {
       if (el.checked) ga.sel.add(fid(o)); else ga.sel.delete(fid(o));
     }
-    gaRender(["gaFiles", "gaWhat", "gaResult"]);
+    gaRefreshPicks();
   };
 
   function gaWhat() {
@@ -836,18 +897,57 @@
   }
 
   acts.gaGive = () => {
-    const plan = gaPlan(), expires = new Date(clock() + ga.days * 864e5).toISOString();
+    const plan = gaPlan(), expires = new Date(clock() + ga.days * 864e5).toISOString(), batch = `b${Date.now().toString(36)}`;
     let given = 0;
     for (const p of plan) {
       record(A.me.id, "share", objType(p.o), `${p.o.bucket}/${p.o.key}`, p.share);
       if (!p.share.allowed || !p.after.some(x => x.res.allowed && !x.before)) continue;
       S.shares = S.shares.filter(s => !(s.bucket === p.o.bucket && s.key === p.o.key && s.grantee === ga.who));
-      S.shares.push({ bucket: p.o.bucket, key: p.o.key, grantee: ga.who, actions: p.grant.actions, expires, grantor: A.me.id, created: nowIso() });
+      S.shares.push({ bucket: p.o.bucket, key: p.o.key, grantee: ga.who, actions: p.grant.actions, expires, grantor: A.me.id, created: nowIso(), batch });
       given++;
     }
+    if (given) S.batches.push({ id: batch, grantee: ga.who, grantor: A.me.id, created: nowIso(), expires, count: given });
     closeDrawer();
     toast(`${displayName(ga.who)} has access to ${plural(given, "file")} until ${day(expires)}`, "ok");
     route();
+  };
+
+  // myGroups lists the unexpired shares the signed-in person gave: one
+  // group per Give access, and the older single shares per person.
+  function myGroups() {
+    const groups = new Map();
+    for (const x of S.shares.filter(y => y.grantor === A.me.id && Date.parse(y.expires) > clock())) {
+      const k = x.batch || `single:${x.grantee}`;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(x);
+    }
+    return groups;
+  }
+  acts.myShares = () => {
+    const groups = [...myGroups().entries()].sort((a, b) => Date.parse(b[1][0].created) - Date.parse(a[1][0].created));
+    openDrawer("Access you gave", groups.length ? groups.map(([k, list]) => {
+      const g = list[0].grantee;
+      return `<div class="batch">${avatar(g)}<div class="grow min0"><b>${esc(displayName(g))}</b> · ${plural(list.length, "file")}` +
+        `<div class="muted small">given ${ago(list[0].created)} · until ${day(list.reduce((m, x) => (x.expires < m ? x.expires : m), list[0].expires))}</div>` +
+        `<details><summary class="small">Show the files</summary>${list.slice(0, 40).map(x => `<div class="mini-row">${icon("file", "sm")}<span class="grow min0"><span class="fname">${esc(x.bucket)}/${esc(x.key)}</span></span></div>`).join("")}` +
+        `${list.length > 40 ? `<div class="muted small pad">and ${list.length - 40} more</div>` : ""}</details></div>` +
+        `<button class="btn sm danger" data-act="takeBack" data-k="${esc(k)}">Take back</button></div>`;
+    }).join("") : `<div class="empty">Nothing given that is still running.</div>`);
+  };
+  acts.takeBack = d => {
+    const list = myGroups().get(d.k) || [], g = list.length ? list[0].grantee : "";
+    confirm(`Take back ${plural(list.length, "share")}?`, `<p>${esc(displayName(g))} loses the access you gave to ${plural(list.length, "file")}, at once.</p>`, "Take back", () => {
+      let done = 0, refused = 0;
+      for (const x of list) {
+        const o = findObj(x.bucket, x.key), res = o ? canShare(o) : { allowed: false, stage: "unknown" };
+        if (o) record(A.me.id, "share", objType(o), `${o.bucket}/${o.key}`, res);
+        if (!res.allowed) { refused++; continue; }
+        S.shares = S.shares.filter(y => y !== x);
+        done++;
+      }
+      toast(`Took back ${plural(done, "share")}${refused ? `; ${refused} not, because you may no longer share those files` : ""}`, refused ? "bad" : "ok");
+      route();
+    });
   };
 
   // ---------------------------------------------------------------- user: approvals, activity
@@ -944,6 +1044,8 @@
     const el = e.target.closest("[data-act]");
     if (!el || el.disabled || !acts[el.dataset.act]) return;
     if (el.tagName === "INPUT" || el.tagName === "LABEL") return;
+    const ctl = e.target.closest("input, select, textarea, label");
+    if (ctl && ctl !== el && el.contains(ctl)) return;
     e.preventDefault();
     acts[el.dataset.act](el.dataset, el, e);
   });
@@ -962,7 +1064,7 @@
   Object.assign(A, {
     icon, esc, avatar, displayName, when, day, time, ago, bytes, val, checked, unique, slug, go, plural, tech, typeName, actChip, roleName,
     roleChip, labelChip, projectName, projChip, setName, ruleTitle, person, bucketOf, findObj, allRoles, rolesText, people, matchPerson, toast,
-    capsOf, objType, openAction, objRes, bucketRes, decide, decideFor, whyText, plainTrace, whoCan, record, recordAdmin, applyBoth, change,
+    capsOf, objType, openAction, objRes, bucketRes, decide, decideFor, whyText, reason, plainTrace, whoCan, record, recordAdmin, applyBoth, change,
     updateChangesBtn, download, shell, pageHead, openDrawer, closeDrawer, confirm, gap, fileIcon, fileKindText, baseName, folderOf,
     activeShares, eventText, auditTable, nowIso, clock,
   });

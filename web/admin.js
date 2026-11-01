@@ -1,5 +1,5 @@
 // The administrator's pages of the console mockup: overview, people, AI
-// agents, roles, permission sets, spaces, tools, rules, servers and the
+// agents, roles, rights, projects, spaces, tools, rules, servers and the
 // audit log. People and permission changes apply at once (in fga through
 // the admin API, each one audited); rule changes collect in a draft that is
 // signed offline; server settings are exported as files, never pushed.
@@ -27,7 +27,7 @@
       `<a class="btn" href="#/admin/people?new=1">${icon("plus")}Add a person</a><a class="btn primary" href="#/admin/graph">${icon("graph")}Access graph</a>`)}` +
       `<div class="grid kpis">${kpi("users", "People", active.length, `${users.length - active.length} disabled`, "/admin/people")}` +
       `${kpi("bot", "AI agents", agents.length, `${S.delegations.filter(d => d.status === "active").length} acting for people`, "/admin/agents")}` +
-      `${kpi("bucket", "Spaces", S.buckets.length, `${S.objects.length} files`, "/admin/spaces")}` +
+      `${kpi("folder", "Projects", S.projects.length, `${S.buckets.length} spaces, ${S.objects.length} files`, "/admin/projects")}` +
       `${kpi("policy", "Rules", S.rules.length, `version ${S.bundle.epoch}`, "/admin/rules")}` +
       `${kpi("inbox", "Waiting approvals", S.approvals.filter(a => a.state === "pending").length, "less sensitive requests", "/admin/audit")}` +
       `${kpi("x", "Not allowed", denied, "in the audit log", "/admin/audit?d=deny")}</div>` +
@@ -47,84 +47,169 @@
 
   // ---------------------------------------------------------------- people
 
-  const pf = { q: "", role: "", project: "", status: "active", page: 0 };
+  const pf = { q: "", role: "", project: "", status: "active", right: "", page: 0, sel: new Set() };
   const PAGE = 25;
+  // profileOf names the profile whose rights a person holds exactly.
+  const profileOf = p => Object.entries(S.profiles).find(([, x]) => x.rights.length === new Set(p.grants).size && x.rights.every(r => p.grants.includes(r)));
+  // rightsText names a person's rights by the nearest profile: exactly a
+  // profile, a profile plus some rights, or a custom set.
+  const rightsText = p => {
+    const m = profileOf(p);
+    if (m) return m[1].name;
+    if (!p.grants.length) return "No rights";
+    const base = Object.values(S.profiles).filter(x => x.rights.length && x.rights.every(r => p.grants.includes(r))).sort((a, b) => b.rights.length - a.rights.length)[0];
+    const extra = base ? new Set(p.grants).size - base.rights.length : 0;
+    return base ? `${base.name}, plus ${plural(extra, "right")}` : `Custom · ${plural(p.grants.length, "right")}`;
+  };
+  const leadsOf = p => p.attributes.leads || [];
+  const projCell = p => (p.attributes.projects || []).map(id => `<span class="chip proj-chip ${leadsOf(p).includes(id) ? "lead" : ""}" title="${leadsOf(p).includes(id) ? "Team lead of" : "Member of"} ${esc(projectName(id))}">` +
+    `${esc(projectName(id))}${leadsOf(p).includes(id) ? " · lead" : ""}</span>`).join("");
+  Object.assign(A, { profileOf, rightsText, leadsOf });
 
   function renderPeople(params) {
-    if (params.get("role") !== null) { pf.role = params.get("role"); pf.q = ""; pf.project = ""; pf.page = 0; }
+    for (const k of ["role", "project", "right"]) {
+      if (params.get(k) !== null) { Object.assign(pf, { q: "", role: "", project: "", right: "", page: 0 }); pf[k] = params.get(k); }
+    }
     const opts = (list, cur, all) => `<option value="">${all}</option>` + list.map(([v, t]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(t)}</option>`).join("");
+    const rights = Object.keys(S.permSets).map(id => [id, W.set(id, S.permSets).name]);
     shell("People", "", `<div class="page wide">${pageHead("People",
-      "Everyone who can sign in. Roles and projects decide which rules apply to them; permission sets are the most they may ever do.",
+      "Everyone who can sign in. Their <b>rights</b> are the most they may ever do; their <b>projects</b> and <b>roles</b> decide where the rules let them do it.",
       `<button class="btn primary" data-act="editPerson" data-new="1">${icon("plus")}Add a person</button>`)}` +
       `<div class="card"><div class="card-head filters"><input class="input search" id="pq" placeholder="Search by name" value="${esc(pf.q)}" data-on-input="pfQ" aria-label="Search people">` +
-      `<select class="input" data-on-change="pfSet" data-k="role" aria-label="Role">${opts(allRoles().map(r => [r, W.role(r).one]), pf.role, "All roles")}</select>` +
+      `<select class="input" data-on-change="pfSet" data-k="right" aria-label="Rights"><option value="">Any rights</option>` +
+      `<optgroup label="Has the right">${rights.map(([v, t]) => `<option value="+${esc(v)}" ${pf.right === "+" + v ? "selected" : ""}>Can: ${esc(t)}</option>`).join("")}</optgroup>` +
+      `<optgroup label="Lacks the right">${rights.map(([v, t]) => `<option value="-${esc(v)}" ${pf.right === "-" + v ? "selected" : ""}>Cannot: ${esc(t)}</option>`).join("")}</optgroup>` +
+      `<option value="none" ${pf.right === "none" ? "selected" : ""}>No rights at all</option></select>` +
       `<select class="input" data-on-change="pfSet" data-k="project" aria-label="Project">${opts(S.projects.map(p => [p.id, p.name]), pf.project, "All projects")}</select>` +
+      `<select class="input" data-on-change="pfSet" data-k="role" aria-label="Role">${opts(allRoles().map(r => [r, W.role(r).one]), pf.role, "All roles")}</select>` +
       `<select class="input" data-on-change="pfSet" data-k="status" aria-label="Status">${opts([["active", "Active"], ["disabled", "Disabled"]], pf.status, "Active and disabled")}</select></div>` +
       `<div id="peopleRows">${peopleRows()}</div></div></div>`);
     if (params.get("new")) acts.editPerson({ new: "1" });
   }
   A.routes["/admin/people"] = renderPeople;
 
-  function peopleRows() {
-    const list = people().filter(p => matchPerson(p, pf.q.trim()) && (!pf.role || p.roles.includes(pf.role)) &&
-      (!pf.project || (p.attributes.projects || []).includes(pf.project)) && (!pf.status || p.status === pf.status))
+  function peopleList() {
+    const r = pf.right, has = id => p => p.grants.includes(id);
+    return people().filter(p => matchPerson(p, pf.q.trim()) && (!pf.role || p.roles.includes(pf.role)) &&
+      (!pf.project || (p.attributes.projects || []).includes(pf.project)) && (!pf.status || p.status === pf.status) &&
+      (!r || (r === "none" ? !p.grants.length : r[0] === "+" ? has(r.slice(1))(p) : !has(r.slice(1))(p))))
       .sort((a, b) => displayName(a.id).localeCompare(displayName(b.id)));
-    const pages = Math.max(1, Math.ceil(list.length / PAGE));
+  }
+  function peopleRows() {
+    const list = peopleList(), pages = Math.max(1, Math.ceil(list.length / PAGE));
     pf.page = Math.min(pf.page, pages - 1);
-    const rows = list.slice(pf.page * PAGE, pf.page * PAGE + PAGE).map(p => `<tr class="clickable" data-act="editPerson" data-id="${esc(p.id)}">` +
+    const page = list.slice(pf.page * PAGE, pf.page * PAGE + PAGE);
+    const opt = (list2, first) => `<option value="">${first}</option>` + list2.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("");
+    const rights = Object.keys(S.permSets).map(id => [id, W.set(id, S.permSets).name]);
+    const bulk = pf.sel.size ? `<div class="bulk-bar"><b>${plural(pf.sel.size, "person", "people")} selected</b>` +
+      (pf.sel.size < list.length ? `<button class="btn sm ghost" data-act="pfSelectAll">Select all ${list.length} matching</button>` : "") +
+      `<select class="input" data-on-change="bulkProfile" aria-label="Apply a profile">${opt(Object.entries(S.profiles).map(([k, x]) => [k, x.name]), "Apply a profile…")}</select>` +
+      `<select class="input" data-on-change="bulkGive" aria-label="Give a right">${opt(rights, "Give a right…")}</select>` +
+      `<select class="input" data-on-change="bulkTake" aria-label="Take a right">${opt(rights, "Take a right…")}</select>` +
+      `<select class="input" data-on-change="bulkProject" aria-label="Add to a project">${opt(S.projects.map(x => [x.id, x.name]), "Add to a project…")}</select>` +
+      `<button class="btn sm ghost" data-act="pfClearSel">Clear</button></div>` : "";
+    const rows = page.map(p => `<tr class="clickable" data-act="editPerson" data-id="${esc(p.id)}">` +
+      `<td class="pick-cell"><input type="checkbox" data-on-change="pfPick" data-id="${esc(p.id)}" ${pf.sel.has(p.id) ? "checked" : ""} aria-label="Select ${esc(displayName(p.id))}"></td>` +
       `<td><div class="who">${avatar(p.id)}<div><b>${esc(displayName(p.id))}</b><div class="muted small">${esc(p.id)}</div></div></div></td>` +
-      `<td><div class="chips">${p.roles.map(r => roleChip(r)).join("") || '<span class="muted small">none</span>'}</div></td>` +
-      `<td class="hide-sm"><div class="chips">${(p.attributes.projects || []).map(projChip).join("") || '<span class="muted small">none</span>'}</div></td>` +
-      `<td class="hide-sm"><div class="chips">${p.grants.map(g => `<span class="chip on">${setName(g)}</span>`).join("") || '<span class="muted small">none: may do nothing</span>'}</div></td>` +
+      `<td><span class="chip ${p.grants.length ? "on" : ""}" title="${esc(p.grants.map(g => W.set(g, S.permSets).name).join(", ") || "No rights")}">${esc(rightsText(p))}</span></td>` +
+      `<td class="hide-sm"><div class="chips">${projCell(p) || '<span class="muted small">none</span>'}</div></td>` +
+      `<td class="hide-md"><div class="chips">${p.roles.map(r => roleChip(r)).join("") || '<span class="muted small">none</span>'}</div></td>` +
       `<td>${statusBadge(p.status)}</td></tr>`).join("");
-    return list.length ? `<table class="tbl"><thead><tr><th>Person</th><th>Roles</th><th class="hide-sm">Projects</th><th class="hide-sm">Permission sets</th><th>Status</th></tr></thead>` +
+    const allOnPage = page.length && page.every(p => pf.sel.has(p.id));
+    return bulk + (list.length ? `<table class="tbl"><thead><tr><th class="pick-cell"><input type="checkbox" data-on-change="pfPickPage" ${allOnPage ? "checked" : ""} aria-label="Select this page"></th>` +
+      `<th>Person</th><th>Rights</th><th class="hide-sm">Projects</th><th class="hide-md">Roles</th><th>Status</th></tr></thead>` +
       `<tbody>${rows}</tbody></table><div class="pager"><span class="muted small">${plural(list.length, "person", "people")}</span><span class="spacer"></span>` +
       `<button class="btn sm" data-act="pfPage" data-d="-1" ${pf.page ? "" : "disabled"}>${icon("back", "sm")}Previous</button>` +
       `<span class="muted small">Page ${pf.page + 1} of ${pages}</span>` +
       `<button class="btn sm" data-act="pfPage" data-d="1" ${pf.page < pages - 1 ? "" : "disabled"}>Next${icon("chevron", "sm")}</button></div>`
-      : `<div class="empty">${icon("users")}<div>No one matches.</div></div>`;
+      : `<div class="empty">${icon("users")}<div>No one matches.</div></div>`);
   }
   const refreshPeople = () => { const el = document.getElementById("peopleRows"); if (el) el.innerHTML = peopleRows(); };
   acts.pfQ = (d, el) => { pf.q = el.value; pf.page = 0; refreshPeople(); };
   acts.pfSet = (d, el) => { pf[d.k] = el.value; pf.page = 0; refreshPeople(); };
   acts.pfPage = d => { pf.page += Number(d.d); refreshPeople(); };
+  acts.pfPick = (d, el) => { if (el.checked) pf.sel.add(d.id); else pf.sel.delete(d.id); refreshPeople(); };
+  acts.pfPickPage = (d, el) => {
+    for (const p of peopleList().slice(pf.page * PAGE, pf.page * PAGE + PAGE)) { if (el.checked) pf.sel.add(p.id); else pf.sel.delete(p.id); }
+    refreshPeople();
+  };
+  acts.pfSelectAll = () => { peopleList().forEach(p => pf.sel.add(p.id)); refreshPeople(); };
+  acts.pfClearSel = () => { pf.sel.clear(); refreshPeople(); };
+
+  // bulk changes the rights or projects of every selected person at once;
+  // anything that takes something away asks first.
+  function bulk(text, takes, fn) {
+    const ids = [...pf.sel], go2 = () => {
+      applyBoth(st => ids.forEach(id => fn(st.principals.find(p => p.id === id))));
+      recordAdmin(text, plural(ids.length, "person", "people"));
+      toast(`${W.cap(text)}: ${plural(ids.length, "person", "people")}`, "ok");
+      refreshPeople();
+    };
+    if (!takes) return go2();
+    confirm(`${W.cap(text)} for ${plural(ids.length, "person", "people")}?`, `<p>This takes something away from each of them, at once.</p>` + journalNote, "Apply", go2);
+  }
+  acts.bulkProfile = (d, el) => {
+    const x = S.profiles[el.value];
+    el.value = "";
+    if (x) bulk(`set the rights to ${x.name}`, true, p => { p.grants = [...x.rights]; });
+  };
+  acts.bulkGive = (d, el) => { const r = el.value; el.value = ""; if (r) bulk(`gave the right ${W.set(r, S.permSets).name}`, false, p => { if (!p.grants.includes(r)) p.grants.push(r); }); };
+  acts.bulkTake = (d, el) => { const r = el.value; el.value = ""; if (r) bulk(`took the right ${W.set(r, S.permSets).name}`, true, p => { p.grants = p.grants.filter(g => g !== r); }); };
+  acts.bulkProject = (d, el) => {
+    const id = el.value;
+    el.value = "";
+    if (id) bulk(`added to ${projectName(id)}`, false, p => { p.attributes = { ...p.attributes, projects: [...new Set([...(p.attributes.projects || []), id])] }; });
+  };
 
   acts.editPerson = d => {
     const isNew = d.new === "1";
-    const p = isNew ? { id: "", kind: "user", roles: ["member"], attributes: { projects: [] }, grants: ["storage"], status: "active" } : person(d.id);
+    const p = isNew ? { id: "", kind: "user", roles: ["member"], attributes: { projects: [] }, grants: [...S.profiles.member.rights], status: "active" } : person(d.id);
     const shares = S.shares.filter(s => s.grantee === p.id && Date.parse(s.expires) > A.clock());
     const delegations = S.delegations.filter(x => x.status === "active" && x.subject === p.id);
     openDrawer(isNew ? "Add a person" : displayName(p.id),
       (isNew ? `<label class="field"><span>Sign-in name</span><input class="input" id="fPid" placeholder="dana.lee" autocomplete="off">` +
         `<small>The name in their sign-in pass, as your organisation's login sends it.</small></label>`
         : `<div class="file-head">${avatar(p.id, "lg")}<div><b>${esc(displayName(p.id))}</b><div class="muted small">${esc(p.id)} · ${statusBadge(p.status)}</div></div></div>`) +
+      `<div class="field"><span>Rights</span><select class="input" data-on-change="applyProfile" aria-label="Start from a profile"><option value="">Start from a profile…</option>` +
+        Object.entries(S.profiles).map(([k, x]) => `<option value="${esc(k)}">${esc(x.name)}: ${esc(x.help)}</option>`).join("") + `</select>` +
+        `<div class="rights-list">${Object.keys(S.permSets).map(id => checkRow(`data-set="${esc(id)}"`, p.grants.includes(id), setName(id) + tech(id), W.set(id, S.permSets).help)).join("")}</div>` +
+        `<small>A right is the most they may ever do; the rules decide where. With no rights, they can sign in and do nothing.</small></div>` +
+      `<div class="field"><span>Projects</span><table class="mini-tbl"><thead><tr><th>Project</th><th>Member</th><th>Team lead</th></tr></thead><tbody>` +
+        S.projects.map(x => `<tr><td>${esc(x.name)}</td><td><input type="checkbox" data-project="${esc(x.id)}" ${(p.attributes.projects || []).includes(x.id) ? "checked" : ""} aria-label="Member of ${esc(x.name)}"></td>` +
+          `<td><input type="checkbox" data-lead="${esc(x.id)}" ${leadsOf(p).includes(x.id) ? "checked" : ""} aria-label="Team lead of ${esc(x.name)}"></td></tr>`).join("") +
+        `</tbody></table><small>Rules compare these with the project of a space or file. A team lead is also a member.</small></div>` +
       `<div class="field"><span>Roles</span>${allRoles().map(r => checkRow(`data-role="${esc(r)}"`, p.roles.includes(r), roleName(r) + tech(r), W.role(r).help)).join("")}</div>` +
-      `<div class="field"><span>Projects</span><div class="check-grid">${S.projects.map(x => `<label class="check"><input type="checkbox" data-project="${esc(x.id)}" ` +
-        `${(p.attributes.projects || []).includes(x.id) ? "checked" : ""}>${esc(x.name)}</label>`).join("")}</div><small>Rules compare these with the project of a space or file.</small></div>` +
-      `<div class="field"><span>Permission sets</span>${Object.keys(S.permSets).map(id => checkRow(`data-set="${esc(id)}"`, p.grants.includes(id), setName(id) + tech(id),
-        W.set(id, S.permSets).help)).join("")}<small>Without a permission set, no rule can allow them anything.</small></div>` +
-      (isNew ? "" : `<div class="field"><span>Single files shared with them</span>${shares.length ? shares.map(s => `<div class="mini-row">${icon("file", "sm")}` +
-        `<span class="grow">${esc(s.bucket)}/${esc(s.key)}</span><span class="muted small">until ${day(s.expires)}</span></div>`).join("")
+      (isNew ? "" : `<div class="field"><span>Single files shared with them</span>${shares.length ? shares.slice(0, 12).map(s => `<div class="mini-row">${icon("file", "sm")}` +
+        `<span class="grow">${esc(s.bucket)}/${esc(s.key)}</span><span class="muted small">until ${day(s.expires)}</span></div>`).join("") +
+        (shares.length > 12 ? `<div class="muted small pad">and ${shares.length - 12} more</div>` : "")
         : `<span class="muted small">None.</span>`}<small>Only a file's owner or a file steward can change these.</small></div>` +
         (delegations.length ? `<div class="field"><span>AI agents acting for them</span>${delegations.map(x => `<div class="mini-row">${icon("bot", "sm")}` +
           `<span class="grow">${esc(displayName(x.actor))}</span><span class="muted small">until ${day(x.expires)}</span></div>`).join("")}</div>` : "")) + journalNote,
       (isNew || p.status !== "active" ? "" : `<button class="btn danger" data-act="disablePerson" data-id="${esc(p.id)}">Disable</button><span class="spacer"></span>`) +
       `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn primary" data-act="savePerson" data-id="${esc(p.id)}" data-new="${isNew ? 1 : 0}">Save</button>`);
   };
+  acts.applyProfile = (d, el) => {
+    const x = S.profiles[el.value];
+    if (!x) return;
+    for (const c of document.querySelectorAll("#drawer [data-set]")) c.checked = x.rights.includes(c.dataset.set);
+    el.value = "";
+    toast(`Ticked the rights of ${x.name}; save to apply`);
+  };
   acts.savePerson = d => {
     const isNew = d.new === "1", id = isNew ? val("fPid").trim() : d.id;
     if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(id)) return toast("Use lowercase letters, digits, dots, dashes or underscores", "bad");
     if (isNew && person(id)) return toast(`${id} already exists`, "bad");
-    const roles = checked("#drawer [data-role]").map(x => x.dataset.role), projects = checked("#drawer [data-project]").map(x => x.dataset.project);
+    const roles = checked("#drawer [data-role]").map(x => x.dataset.role), leads = checked("#drawer [data-lead]").map(x => x.dataset.lead);
+    const projects = [...new Set([...checked("#drawer [data-project]").map(x => x.dataset.project), ...leads])];
     const grants = checked("#drawer [data-set]").map(x => x.dataset.set);
     applyBoth(st => {
       let p = st.principals.find(x => x.id === id);
       if (!p) { p = { id, kind: "user", roles: [], attributes: {}, grants: [], status: "active" }; st.principals.push(p); }
       p.roles = roles;
       p.grants = grants;
-      p.attributes = { ...p.attributes, projects };
+      p.attributes = { ...p.attributes, projects, leads };
     });
-    recordAdmin(isNew ? "added a person" : "changed a person's roles and permissions", id);
+    recordAdmin(isNew ? "added a person" : "changed a person's rights, projects and roles", id);
     closeDrawer();
     toast(`Saved ${displayName(id)}`, "ok");
     if (location.hash.includes("new=1")) go("/admin/people"); else A.route();
@@ -145,7 +230,7 @@
     const agents = S.principals.filter(p => p.kind === "agent");
     const dl = S.delegations.filter(x => x.status === "active");
     shell("AI agents", "", `<div class="page wide">${pageHead("AI agents",
-      "Software that acts for a person. When it does, the rules look at that person, and the agent may do only what its own permission sets and its permission to act both allow.",
+      "Software that acts for a person. When it does, the rules look at that person, and the agent may do only what its own rights and its permission to act both allow.",
       `<button class="btn" data-act="newAgent">${icon("plus")}Add an agent</button><button class="btn primary" data-act="newDlg">${icon("link")}Let an agent act for someone</button>`)}` +
       `<div class="card"><div class="card-head"><h3>Acting for people</h3><span class="right muted small">${plural(dl.length, "permission")}</span></div>` +
       (dl.length ? `<table class="tbl"><thead><tr><th>Agent</th><th>Acts for</th><th class="hide-sm">May</th><th>Until</th><th></th></tr></thead><tbody>` +
@@ -155,7 +240,7 @@
             `${esc(W.type(t).many)} · ${a.length}</span>`).join("")}</div></td><td class="muted nowrap">${when(x.expires)}</td>` +
           `<td class="actions"><button class="btn sm danger" data-act="revokeDlg" data-id="${esc(x.id)}">Revoke</button></td></tr>`).join("") + `</tbody></table>`
         : `<div class="empty">${icon("link")}<div>No agent acts for anyone.</div></div>`) + `</div>` +
-      `<div class="card spaced"><div class="card-head"><h3>Agents</h3></div><table class="tbl"><thead><tr><th>Agent</th><th>Acts for</th><th class="hide-sm">Permission sets</th><th>Status</th><th></th></tr></thead><tbody>` +
+      `<div class="card spaced"><div class="card-head"><h3>Agents</h3></div><table class="tbl"><thead><tr><th>Agent</th><th>Acts for</th><th class="hide-sm">Rights</th><th>Status</th><th></th></tr></thead><tbody>` +
       agents.map(p => `<tr><td><div class="who">${avatar(p.id)}<div><b>${esc(displayName(p.id))}</b><div class="muted small">${esc(p.id)}</div></div></div></td>` +
         `<td>${dl.filter(x => x.actor === p.id).map(x => esc(displayName(x.subject))).join(", ") || '<span class="muted small">nobody</span>'}</td>` +
         `<td class="hide-sm"><div class="chips">${p.grants.map(g => `<span class="chip on">${setName(g)}</span>`).join("")}</div></td><td>${statusBadge(p.status)}</td>` +
@@ -166,7 +251,7 @@
 
   acts.newAgent = () => openDrawer("Add an AI agent",
     `<label class="field"><span>Name</span><input class="input" id="fAgent" placeholder="agent-90" autocomplete="off"><small>The name in the agent's own sign-in pass.</small></label>` +
-    `<div class="field"><span>Permission sets</span>${Object.keys(S.permSets).map(id => checkRow(`data-set="${esc(id)}"`, id === "storage", setName(id), W.set(id, S.permSets).help)).join("")}</div>` +
+    `<div class="field"><span>Rights</span>${Object.keys(S.permSets).map(id => checkRow(`data-set="${esc(id)}"`, S.profiles.agent.rights.includes(id), setName(id), W.set(id, S.permSets).help)).join("")}</div>` +
     `<p class="muted small">An agent does nothing on its own until it is allowed to act for someone.</p>`,
     `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn primary" data-act="saveAgent">Add</button>`);
   acts.saveAgent = () => {
@@ -195,7 +280,9 @@
   const DLG_DEFAULT = { "storage.bucket": ["list"], "storage.object": ["discover", "stat", "read"], "document.version": ["discover", "read-units"], "agent.tool": ["discover", "invoke"] };
   acts.newDlg = () => {
     const agents = S.principals.filter(p => p.kind === "agent" && p.status === "active");
-    const types = Object.keys(S.permSets.storage.caps);
+    const caps = {};
+    for (const s of Object.values(S.permSets)) for (const [t, a] of Object.entries(s.caps)) caps[t] = [...new Set([...(caps[t] || []), ...a])];
+    const types = Object.keys(caps).filter(t => t !== "directory.project");
     openDrawer("Let an agent act for someone",
       `<label class="field"><span>Agent</span><select class="input" id="fDlgActor">${agents.map(p => `<option value="${esc(p.id)}">${esc(displayName(p.id))}</option>`).join("")}</select></label>` +
       `<label class="field"><span>Acts for</span><input class="input" id="fDlgSubject" list="dlgPeople" placeholder="Type a name" autocomplete="off">` +
@@ -203,7 +290,7 @@
       `<div class="field"><span>For how long</span><div class="seg">${[["1", "1 hour"], ["24", "1 day"], ["168", "7 days"], ["720", "30 days"]].map(([h, t]) =>
         `<label class="seg-opt"><input type="radio" name="fDlgHours" value="${h}" ${h === "24" ? "checked" : ""}>${t}</label>`).join("")}</div></div>` +
       `<div class="field"><span>What it may do for them</span>` + types.map(t => `<details class="group" ${DLG_DEFAULT[t] ? "open" : ""}><summary>${typeName(t, true)}</summary>` +
-        `<div class="check-grid">${S.types[t].filter(a => S.permSets.storage.caps[t].includes(a)).map(a => `<label class="check" title="${esc(W.action(a, t).help)}">` +
+        `<div class="check-grid">${S.types[t].filter(a => caps[t].includes(a)).map(a => `<label class="check" title="${esc(W.action(a, t).help)}">` +
           `<input type="checkbox" data-dt="${esc(t)}" data-da="${esc(a)}" ${(DLG_DEFAULT[t] || []).includes(a) ? "checked" : ""}>${esc(W.action(a, t).label)}${tech(a)}</label>`).join("")}</div></details>`).join("") +
       `<small>Never more than the person may do themselves: the rules still decide for the person.</small></div>`,
       `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn primary" data-act="saveDlg">Allow</button>`);
@@ -336,36 +423,45 @@
       });
   };
 
-  // ---------------------------------------------------------------- permission sets
+  // ---------------------------------------------------------------- rights and profiles
 
-  function renderPermissions() {
-    const rows = Object.entries(S.permSets).map(([id, s]) => {
-      const n = S.principals.filter(p => p.grants.includes(id)).length;
-      return `<tr class="clickable" data-act="editSet" data-id="${esc(id)}"><td><b>${setName(id)}</b>${tech(id)} ${s.builtin ? '<span class="badge muted">built in</span>' : ""}` +
-        `<div class="muted small">${esc(W.set(id, S.permSets).help)}</div></td>` +
-        `<td class="hide-sm"><div class="chips">${Object.entries(s.caps).map(([t, a]) => `<span class="chip" title="${esc(a.map(x => W.action(x, t).label).join(", "))}">${esc(W.type(t).many)} · ${a.length}</span>`).join("")}</div></td>` +
-        `<td class="num">${n}</td></tr>`;
-    }).join("");
-    shell("Permission sets", "", `<div class="page">${pageHead("Permission sets",
-      "The most a person may ever do. Something is allowed only if one of their permission sets includes it <i>and</i> a rule allows it.",
-      `<button class="btn primary" data-act="editSet" data-new="1">${icon("plus")}New permission set</button>`)}` +
-      `<div class="card"><table class="tbl"><thead><tr><th>Permission set</th><th class="hide-sm">Includes</th><th class="num">People</th></tr></thead><tbody>${rows}</tbody></table></div></div>`);
+  const holding = id => S.principals.filter(p => p.status === "active" && p.grants.includes(id)).length;
+  const matching = k => S.principals.filter(p => p.status === "active" && profileOf(p) && profileOf(p)[0] === k).length;
+  function renderRights() {
+    const rows = Object.entries(S.permSets).map(([id, s]) => `<tr class="clickable" data-act="editSet" data-id="${esc(id)}">` +
+      `<td><b>${setName(id)}</b>${tech(id)} ${s.builtin ? "" : '<span class="badge accent">custom</span>'}<div class="muted small">${esc(W.set(id, S.permSets).help)}</div></td>` +
+      `<td class="hide-sm"><div class="chips">${Object.keys(s.caps).map(t => `<span class="chip" title="${esc(s.caps[t].map(x => W.action(x, t).label).join(", "))}">${esc(W.type(t).many)}</span>`).join("")}</div></td>` +
+      `<td class="num"><a href="#/admin/people?right=%2B${encodeURIComponent(id)}" class="small">${holding(id)}</a></td></tr>`).join("");
+    const profRows = Object.entries(S.profiles).map(([k, x]) => `<tr class="clickable" data-act="editProfile" data-id="${esc(k)}">` +
+      `<td><b>${esc(x.name)}</b><div class="muted small">${esc(x.help || "")}</div></td>` +
+      `<td class="hide-sm"><div class="chips">${x.rights.map(r => `<span class="chip on">${setName(r)}</span>`).join("") || '<span class="muted small">none</span>'}</div></td>` +
+      `<td class="num">${matching(k)}</td></tr>`).join("");
+    shell("Rights", "", `<div class="page">${pageHead("Rights",
+      "A right is the most someone may ever do, such as sharing files or creating projects. Without it, no rule can allow it. The rules then decide where a right applies: in which projects, on whose files.",
+      `<button class="btn" data-act="editProfile" data-new="1">${icon("plus")}New profile</button><button class="btn primary" data-act="editSet" data-new="1">${icon("plus")}New right</button>`)}` +
+      `<div class="card"><div class="card-head"><h3>Rights</h3><span class="muted small">Give or take them on a person's page, or for many people at once under People</span></div>` +
+      `<table class="tbl"><thead><tr><th>Right</th><th class="hide-sm">Applies to</th><th class="num">People</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+      `<div class="card spaced"><div class="card-head"><h3>Profiles</h3><span class="muted small">Ready-made sets of rights to start from</span></div>` +
+      `<table class="tbl"><thead><tr><th>Profile</th><th class="hide-sm">Rights</th><th class="num">People</th></tr></thead><tbody>${profRows}</tbody></table></div></div>`);
   }
-  A.routes["/admin/permissions"] = renderPermissions;
+  A.routes["/admin/rights"] = renderRights;
+  A.routes["/admin/permissions"] = renderRights;
 
   acts.editSet = d => {
     const isNew = d.new === "1", s = isNew ? { name: "", caps: {} } : S.permSets[d.id], fixed = !isNew && s.builtin;
-    const n = isNew ? 0 : S.principals.filter(p => p.grants.includes(d.id)).length;
-    openDrawer(isNew ? "New permission set" : W.set(d.id, S.permSets).name,
-      (fixed ? `<p class="muted small">Built into fga: its contents are fixed.</p>` : `<label class="field"><span>Name</span><input class="input" id="fSetName" value="${esc(s.name)}" placeholder="Read documents"></label>` +
-        `<label class="field"><span>What it is for</span><input class="input" id="fSetHelp" value="${esc(s.help || "")}"></label>`) +
+    const n = isNew ? 0 : holding(d.id);
+    openDrawer(isNew ? "New right" : W.set(d.id, S.permSets).name,
+      (fixed ? `<p class="muted small">${esc(W.set(d.id, S.permSets).help)}. Built in: what it includes is fixed.</p>`
+        : `<label class="field"><span>Name</span><input class="input" id="fSetName" value="${esc(s.name)}" placeholder="Read documents"></label>` +
+          `<label class="field"><span>What it is for</span><input class="input" id="fSetHelp" value="${esc(s.help || "")}"></label>`) +
       `<div class="field"><span>Includes</span>` + Object.keys(S.types).sort((a, b) => W.type(a).many.localeCompare(W.type(b).many)).map(t => {
         const on = s.caps[t] || [];
         if (fixed && !on.length) return "";
         return `<details class="group" ${on.length ? "open" : ""}><summary>${typeName(t, true)}${on.length ? ` <span class="muted small">· ${on.length}</span>` : ""}</summary><div class="check-grid">` +
           S.types[t].map(a => `<label class="check" title="${esc(W.action(a, t).help)}"><input type="checkbox" data-st="${esc(t)}" data-sa="${esc(a)}" ` +
             `${on.includes(a) ? "checked" : ""} ${fixed ? "disabled" : ""}>${esc(W.action(a, t).label)}${tech(a)}</label>`).join("") + `</div></details>`;
-      }).join("") + `</div>` + (isNew ? "" : `<p class="muted small">${plural(n, "person holds", "people hold")} it.</p>`) + (fixed ? "" : journalNote),
+      }).join("") + `</div>` +
+      (isNew ? "" : `<p class="muted small">${plural(n, "person has", "people have")} it. <a href="#/admin/people?right=%2B${encodeURIComponent(d.id)}">Show them</a></p>`) + (fixed ? "" : journalNote),
       (isNew || fixed ? "" : `<button class="btn danger" data-act="removeSet" data-id="${esc(d.id)}">Remove</button><span class="spacer"></span>`) +
       `<button class="btn" data-act="closeDrawer">${fixed ? "Close" : "Cancel"}</button>` +
       (fixed ? "" : `<button class="btn primary" data-act="saveSet" data-id="${esc(d.id || "")}" data-new="${isNew ? 1 : 0}">Save</button>`));
@@ -373,37 +469,65 @@
   acts.saveSet = d => {
     const name = val("fSetName").trim(), help = val("fSetHelp").trim(), caps = {};
     for (const x of checked("#drawer [data-st]")) (caps[x.dataset.st] = caps[x.dataset.st] || []).push(x.dataset.sa);
-    if (!name) return toast("Give the set a name", "bad");
+    if (!name) return toast("Give the right a name", "bad");
     if (!Object.keys(caps).length) return toast("Choose at least one thing it includes", "bad");
-    const id = d.new === "1" ? unique(slug(name) || "set", x => S.permSets[x]) : d.id;
+    const id = d.new === "1" ? unique(slug(name) || "right", x => S.permSets[x]) : d.id;
     applyBoth(st => { st.permSets[id] = { name, help, caps }; });
-    recordAdmin(d.new === "1" ? "created a permission set" : "changed a permission set", name);
+    recordAdmin(d.new === "1" ? "created a right" : "changed a right", name);
     closeDrawer();
     toast(`Saved ${name}`, "ok");
     A.route();
   };
   acts.removeSet = d => {
     const n = S.principals.filter(p => p.grants.includes(d.id)).length;
-    confirm(`Remove ${W.set(d.id, S.permSets).name}?`, `<p><b>${plural(n, "person loses", "people lose")}</b> what it included, at once.</p>` + journalNote, "Remove", () => {
-      applyBoth(st => { st.principals.forEach(p => { p.grants = p.grants.filter(g => g !== d.id); }); delete st.permSets[d.id]; });
-      recordAdmin("removed a permission set", d.id);
+    confirm(`Remove ${W.set(d.id, S.permSets).name}?`, `<p><b>${plural(n, "person loses", "people lose")}</b> it, at once.</p>` + journalNote, "Remove", () => {
+      applyBoth(st => {
+        st.principals.forEach(p => { p.grants = p.grants.filter(g => g !== d.id); });
+        Object.values(st.profiles).forEach(x => { x.rights = x.rights.filter(r => r !== d.id); });
+        delete st.permSets[d.id];
+      });
+      recordAdmin("removed a right", d.id);
       toast("Removed", "ok");
       A.route();
     });
   };
+
+  acts.editProfile = d => {
+    const isNew = d.new === "1", x = isNew ? { name: "", help: "", rights: [] } : S.profiles[d.id];
+    openDrawer(isNew ? "New profile" : x.name,
+      `<label class="field"><span>Name</span><input class="input" id="fProfName" value="${esc(x.name)}" placeholder="Member who cannot export"></label>` +
+      `<label class="field"><span>What it is for</span><input class="input" id="fProfHelp" value="${esc(x.help || "")}"></label>` +
+      `<div class="field"><span>Rights</span>${Object.keys(S.permSets).map(id => checkRow(`data-pr="${esc(id)}"`, x.rights.includes(id), setName(id), W.set(id, S.permSets).help)).join("")}</div>` +
+      `<p class="muted small">A profile only fills in rights; changing it later does not change anyone's rights.</p>`,
+      (isNew ? "" : `<button class="btn danger" data-act="removeProfile" data-id="${esc(d.id)}">Remove</button><span class="spacer"></span>`) +
+      `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn primary" data-act="saveProfile" data-id="${esc(d.id || "")}" data-new="${isNew ? 1 : 0}">Save</button>`);
+  };
+  acts.saveProfile = d => {
+    const name = val("fProfName").trim(), help = val("fProfHelp").trim(), rights = checked("#drawer [data-pr]").map(x => x.dataset.pr);
+    if (!name) return toast("Give the profile a name", "bad");
+    const id = d.new === "1" ? unique(slug(name) || "profile", x => S.profiles[x]) : d.id;
+    applyBoth(st => { st.profiles[id] = { name, help, rights }; });
+    closeDrawer();
+    toast(`Saved the profile ${name}`, "ok");
+    A.route();
+  };
+  acts.removeProfile = d => confirm(`Remove the profile ${S.profiles[d.id].name}?`, `<p>Nobody loses a right: a profile only fills in rights when it is applied.</p>`, "Remove", () => {
+    applyBoth(st => { delete st.profiles[d.id]; });
+    A.route();
+  });
 
   // ---------------------------------------------------------------- spaces
 
   function renderSpaces() {
     const rows = S.buckets.map(b => {
       const files = S.objects.filter(o => o.bucket === b.name);
-      return `<tr><td><div class="obj">${icon(b.mode === "client" ? "lock" : "bucket")}<b>${esc(b.name)}</b></div></td><td>${projChip(b.project)}</td>` +
+      return `<tr><td><div class="obj">${icon(b.mode === "client" ? "lock" : "bucket")}<b>${esc(b.name)}</b></div></td><td><a class="chip proj-chip" href="#/admin/project?id=${encodeURIComponent(b.project)}">${esc(projectName(b.project))}</a></td>` +
         `<td class="hide-sm"><span title="${esc(W.encryption(b.mode).help)}">${esc(W.encryption(b.mode).name)}</span>${tech(b.mode)}</td>` +
         `<td class="num">${files.length}</td><td class="num hide-sm">${bytes(files.reduce((s, o) => s + o.size, 0))}</td>` +
         `<td class="actions"><button class="btn sm icon ghost" data-act="removeSpace" data-id="${esc(b.name)}" aria-label="Remove space" title="Remove space">${icon("trash")}</button></td></tr>`;
     }).join("");
     shell("Spaces", "", `<div class="page">${pageHead("Spaces",
-      "Each space holds one project's files. In spaces encrypted by fga, the rules alone decide who reads; in end-to-end encrypted spaces, people also need a key from the owner.",
+      "Each space belongs to one project and holds its files. In spaces encrypted by fga, the rules alone decide who reads; in end-to-end encrypted spaces, people also need a key from the owner.",
       `<button class="btn primary" data-act="newSpace">${icon("plus")}New space</button>`)}` +
       `<div class="card"><table class="tbl"><thead><tr><th>Space</th><th>Project</th><th class="hide-sm">Encryption</th><th class="num">Files</th><th class="num hide-sm">Size</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`);
   }
@@ -601,7 +725,7 @@
         `<input type="checkbox" data-on-change="rfRole" data-r="${esc(r)}" ${rf.roles.has(r) ? "checked" : ""}>${roleName(r, true)}${tech(r)}</label>`).join("")}</div></div>` +
       `<div class="field"><span>May</span><div class="check-grid">${S.types[t].map(a => `<label class="check" title="${esc(W.action(a, t).help)}">` +
         `<input type="checkbox" data-on-change="rfAction" data-a="${esc(a)}" ${rf.actions.has(a) ? "checked" : ""}>${esc(W.action(a, t).label)}${tech(a)}</label>`).join("")}</div></div>` +
-      `<div class="field"><span>Only when</span>${conds.map(c => `<label class="check"><input type="checkbox" data-on-change="rfCond" data-c="${esc(c.id)}" ${rf.conds.has(c.id) ? "checked" : ""}>${esc(c.text)}</label>`).join("") ||
+      `<div class="field"><span>Only when</span>${conds.map(c => `<label class="check"><input type="checkbox" data-on-change="rfCond" data-c="${esc(c.id)}" ${rf.conds.has(c.id) ? "checked" : ""}>${esc(W.condText(c, t))}</label>`).join("") ||
         '<span class="muted small">No ready-made conditions for this kind of thing.</span>'}` +
       (showCustom ? `<label class="field sub"><span>Custom condition (technical)</span><textarea class="input" id="rfCustom" data-on-input="rfCustom" placeholder="resource.attributes.label_rank < 2">${esc(rf.custom)}</textarea>` +
         `<small id="rfCustomHint"></small></label>` : `<small>Nothing ticked: the rule always applies. Switch on Technical names for a custom condition.</small>`) + `</div>` +
