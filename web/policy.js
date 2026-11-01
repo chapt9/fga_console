@@ -43,7 +43,10 @@ window.FGA_POLICY = (() => {
       }
       const p = [first.v];
       i++;
-      while (peek(".")) {
+      // A name continues with .name or ["name"], the form CEL needs for
+      // names such as read-units.
+      while (peek(".") || (peek("[") && toks[i + 1] && toks[i + 1].t === "str")) {
+        if (peek("[")) { i++; p.push(toks[i++].v); take("]"); continue; }
         i++;
         if (!toks[i] || toks[i].t !== "id") throw new Error('expected a name after "."');
         p.push(toks[i++].v);
