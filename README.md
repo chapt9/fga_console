@@ -1,79 +1,83 @@
 # fga console
 
-A web console for [fga](https://github.com/chapt9/fga): users sign in and
-work with what the policy lets them see; administrators manage identities,
-roles, permission sets, delegations, buckets and tools, and edit policy
-either in forms or in a node graph.
+A web console for [fga](https://github.com/chapt9/fga). People sign in and
+work with what fga lets them see; administrators will manage people, rights,
+spaces and rules.
 
-The console is a separate program and can run on its own machine. It talks
-to fga only over fga's HTTP APIs (mutual TLS in production), never to fga's
-database.
+The console is its own program, `fga-console`, and can run on its own
+machine. It talks to fga only over fga's HTTP APIs, with each signed-in
+person's own pass, never to fga's database. fga decides every request; the
+console never judges access, keeps no files and holds no file keys.
+
+```
+browser ──HTTPS──> fga-console ──HTTPS──> fga-storage (file API) ──> fga-decision, fga-keys, fga-kms
+                    sessions,               fga-admin serve (admin API, part 2)
+                    passes
+```
 
 ## Status
 
-Stop 1 of 5: a clickable mockup over demo data, to agree on the design.
-It has no server and sends nothing anywhere; `web/policy.js` stands in for
-fga's decision role so the pages behave as fga would decide.
+Part 1 of 3 works against a running fga:
 
-To look at it, serve `web/` with any static file server, for example:
+- development sign-in: pick a person, and the console mints short-lived
+  passes in fga's format with the development issuer's key;
+- **Files**: the spaces fga lets the person list, folders, search,
+  download, preview of small text files, upload (spaces encrypted by fga),
+  delete, sensitivity (lowering may need an approval), who a file is shared
+  with, and opening a file shared with you by its name;
+- **Give access**: many files at once (filters, Choose all, whole folders,
+  shift-click ranges, several spaces). fga decides each share and the page
+  shows its answer per file. **Access you gave** takes a whole batch back;
+- **Approvals**: the requests fga lets the person decide.
 
-    python3 -m http.server --directory web --bind 127.0.0.1 8080
+End-to-end encrypted spaces are listed, but their files are opened and
+uploaded with the fga program, which holds the person's keys.
 
-and open http://127.0.0.1:8080.
+Next: part 2, the administrator's pages over fga's admin API (`fga-admin
+serve`); part 3, sign-in with the organisation's login (OIDC), certificates
+between the console and fga, and a deployment guide.
 
-The demo organisation has about 300 people in eight projects, a dozen
-spaces and some 250 files of different kinds. Sign in as:
+### Gaps in fga's file API
 
-- alice: a member who may also create projects of their own;
-- bob: a member who may also send data outside;
-- carl: a member without the right to share;
-- lena: team lead of Apollo, who approves requests and runs the project;
-- sam: a file steward, who can give people access to single files in
-  their projects without being able to open them;
-- gus: a guest with no rights at all;
-- the administrator, for people, rights, roles, AI agents, projects,
-  spaces, tools, rules, servers, the audit log and the access graph.
+The console shows what fga's file API offers, and nothing made up:
 
-What someone may do is the smaller of two things: their **rights** (the
-most they may ever do, such as sharing or creating projects, given per
-person or from a profile) and the **rules** (where a right applies: in
-which projects, on whose files). Team leads are chosen per project.
+- there is no "spaces I may see": the console asks fga about each space in
+  its configuration;
+- there is no "files shared with me": a person opens such a file by name;
+- a listing gives a file's name, stored (encrypted) size and date, not its
+  owner or sensitivity;
+- there is no "what may I do here?", so buttons are not greyed out in
+  advance; fga's refusal is shown in plain words instead;
+- there is no person's own activity, and no directory search for people.
 
-Every page uses plain words from `web/words.js`; "Technical names" shows
-fga's own names beside them. The access graph has three views (rules, one
-person, one file) so it stays readable with hundreds of people. Giving
-access takes many files at once: filters with "Choose all", whole folders,
-shift-click ranges and several spaces, and can be taken back as a batch.
+## Running it
 
-### Needs fga changes
+Build it outside the repository and start it with a configuration file:
 
-The mockup shows these, marked "Needs a change in fga" where they appear:
+    go build -o /tmp/fga-console ./cmd/fga-console
+    /tmp/fga-console -config console.json
 
-- projects as something fga knows, with operations people may be allowed:
-  create a project (and lead it), add and remove members, choose team
-  leads, create spaces in it; a new project can never take an existing
-  project's name;
-- removing a space, a tool or an external address, and turning the AI
-  assistant tools off;
-- a remote admin API for tools (today `fga-tools` commands on its host);
-- a place in the signed rules for role names and descriptions.
+For the fga demo (development profile, loopback only):
 
-Rights work with fga as it is: each is a set of capabilities
-(`fga-admin grant -type -actions`); profiles exist only in the console.
+```json
+{"version": 1, "listen": "127.0.0.1:28600", "tenant": "t-acme", "organisation": "Acme (demo)",
+ "storage_url": "http://127.0.0.1:28441", "spaces": ["shared", "reports"], "data_dir": "data",
+ "dev_signin": {"issuer": "fga-dev", "key_id": "tok-1", "key_file": "<demo>/issuer.key",
+                "people": ["alice", "bob", "carl", "lena"]}}
+```
 
-Server settings are never pushed: the console checks them and exports
-the settings file, which is put in place on the server before a restart.
+Development sign-in, and plain HTTP to fga, are refused unless the address
+is on this machine (loopback). `data_dir` keeps the console's own small
+records (which shares were given together); fga keeps everything else.
 
-## Plan
+`go test ./...` runs the console's tests against a stand-in for fga's file
+API that checks every pass the console sends.
 
-1. Design mockup (this).
-2. fga: a narrow admin API (`fga-admin serve`), mutual TLS plus an
-   administrator's token, every change audited.
-3. Console server: sign-in (development picker first, OpenID Connect
-   later), sessions, the user's pages.
-4. Admin forms over the admin API.
-5. The access graph over the same API; rule changes exported as a draft
-   bundle that is signed offline.
+## Layout
 
-The frontend is plain JavaScript, CSS and SVG with no third-party code,
-served with a strict content security policy.
+| Path | What |
+|---|---|
+| `cmd/fga-console` | the program |
+| `internal/console` | configuration, passes, sessions, the console's API |
+| `web` | the pages (plain JavaScript, CSS and SVG, no third-party code), built into the program |
+| `design-mockup` | the design mockup the pages were drawn from; not served, kept for parts 2 and 3 |
