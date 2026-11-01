@@ -78,9 +78,11 @@ func (f *fakeFGA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// verify checks a pass as fga does: type, algorithm, key, signature,
-// issuer, audience, tenant and lifetime.
-func (f *fakeFGA) verify(auth string) map[string]any {
+// verify checks a pass as fga's file API does: type, algorithm, key,
+// signature, issuer, audience, tenant and lifetime.
+func (f *fakeFGA) verify(auth string) map[string]any { return f.verifyFor(auth, StorageAudience) }
+
+func (f *fakeFGA) verifyFor(auth, audience string) map[string]any {
 	tok, ok := strings.CutPrefix(auth, "Bearer ")
 	parts := strings.Split(tok, ".")
 	if !ok || len(parts) != 3 {
@@ -101,15 +103,52 @@ func (f *fakeFGA) verify(auth string) map[string]any {
 		return nil
 	}
 	life := claims["exp"].(float64) - claims["iat"].(float64)
-	if claims["iss"] != "fga-dev" || claims["aud"] != StorageAudience || claims["fga_tenant"] != "t-acme" || life <= 0 || life > 3600 {
+	if claims["iss"] != "fga-dev" || claims["aud"] != audience || claims["fga_tenant"] != "t-acme" || life <= 0 || life > 3600 {
 		f.t.Errorf("pass claims %v", claims)
 		return nil
 	}
 	return claims
 }
 
+// fakeAdmin stands in for fga's admin API: root is its only administrator.
+type fakeAdmin struct {
+	f     *fakeFGA
+	mu    sync.Mutex
+	calls []string
+}
+
+func (a *fakeAdmin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	claims := a.f.verifyFor(r.Header.Get("Authorization"), "fga-admin")
+	w.Header().Set("Content-Type", "application/json")
+	if claims == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"error":"the token does not verify"}`)
+		return
+	}
+	if claims["sub"] != "root" {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `{"error":"not an administrator of this tenant"}`)
+		return
+	}
+	body, _ := io.ReadAll(r.Body)
+	a.mu.Lock()
+	a.calls = append(a.calls, r.Method+" "+r.URL.Path+" "+string(body))
+	a.mu.Unlock()
+	switch {
+	case r.URL.Path == "/v1/admin/whoami":
+		io.WriteString(w, `{"tenant":"t-acme","subject":"root","console":"console-dev"}`)
+	case r.URL.Path == "/v1/admin/identities":
+		io.WriteString(w, `{"items":[{"id":"alice","roles":["member"],"attributes":{"projects":["p1"]},"disabled":false,"capabilities":{}}]}`)
+	case r.Method == http.MethodPut:
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		io.WriteString(w, `{}`)
+	}
+}
+
 type env struct {
 	t       *testing.T
+	admin   *fakeAdmin
 	fga     *fakeFGA
 	console *httptest.Server
 	client  *http.Client
@@ -126,9 +165,12 @@ func newEnv(t *testing.T) *env {
 	f := &fakeFGA{t: t, pub: pub, grants: map[string]bool{}, refuse: map[string]bool{}}
 	fga := httptest.NewServer(f)
 	t.Cleanup(fga.Close)
+	adm := &fakeAdmin{f: f}
+	admin := httptest.NewServer(adm)
+	t.Cleanup(admin.Close)
 	cfg := &Config{Version: 1, Listen: "127.0.0.1:0", Tenant: "t-acme", StorageURL: fga.URL, Spaces: []string{"shared", "hidden"},
-		DataDir: filepath.Join(dir, "data"), SessionHours: 8, MaxUploadMB: 1,
-		DevSignIn: &DevSignIn{Issuer: "fga-dev", KeyID: "tok-1", KeyFile: keyFile, People: []string{"alice", "carl"}}}
+		AdminURL: admin.URL, AdminAudience: "fga-admin", DataDir: filepath.Join(dir, "data"), SessionHours: 8, MaxUploadMB: 1,
+		DevSignIn: &DevSignIn{Issuer: "fga-dev", KeyID: "tok-1", KeyFile: keyFile, People: []string{"alice", "carl", "root"}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +182,7 @@ func newEnv(t *testing.T) *env {
 	console := httptest.NewServer(s.Handler())
 	t.Cleanup(console.Close)
 	jar, _ := cookiejar.New(nil)
-	return &env{t: t, fga: f, console: console, client: &http.Client{Jar: jar}}
+	return &env{t: t, admin: adm, fga: f, console: console, client: &http.Client{Jar: jar}}
 }
 
 // do sends a request as the console's own pages do.
@@ -338,5 +380,71 @@ func TestGiveAccessAndTakeBackABatch(t *testing.T) {
 	}
 	if _, body := e.do(http.MethodGet, "/api/batches", ""); strings.Contains(body, out.Batch) {
 		t.Fatalf("an empty batch is still listed: %s", body)
+	}
+}
+
+func TestAdministratorsAreDecidedByFGA(t *testing.T) {
+	e := newEnv(t)
+	e.signIn("alice")
+	if _, body := e.do(http.MethodGet, "/api/session", ""); !strings.Contains(body, `"admin":false`) {
+		t.Fatalf("alice's session %s", body)
+	}
+	if resp, body := e.do(http.MethodGet, "/api/admin/people", ""); resp.StatusCode != http.StatusForbidden || !strings.Contains(body, "not an administrator") {
+		t.Fatalf("alice listing people: %d %s", resp.StatusCode, body)
+	}
+	if resp, _ := e.do(http.MethodGet, "/api/admin/rights", ""); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("alice reading the console's admin records: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(http.MethodGet, "/api/admin/servers", ""); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("alice reading server health: %d", resp.StatusCode)
+	}
+	e.signIn("root")
+	if _, body := e.do(http.MethodGet, "/api/session", ""); !strings.Contains(body, `"admin":true`) {
+		t.Fatalf("root's session %s", body)
+	}
+	if resp, body := e.do(http.MethodGet, "/api/admin/people?limit=50&secret=x", ""); resp.StatusCode != http.StatusOK || !strings.Contains(body, `"id":"alice"`) {
+		t.Fatalf("root listing people: %d %s", resp.StatusCode, body)
+	}
+	if _, body := e.do(http.MethodGet, "/api/admin/rights", ""); !strings.Contains(body, `"id":"share"`) || !strings.Contains(body, `"profiles"`) {
+		t.Fatalf("rights %s", body)
+	}
+}
+
+func TestAdminChangesAreForwardedAsTheyAre(t *testing.T) {
+	e := newEnv(t)
+	e.signIn("root")
+	if resp, _ := e.do(http.MethodPut, "/api/admin/people/carl", `{"roles":["member"],"attributes":{"projects":["p1","p2"]}}`); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("put: %d", resp.StatusCode)
+	}
+	for _, bad := range []string{"/api/admin/people/" + url.PathEscape("a/b"), "/api/admin/people/" + url.PathEscape("a b")} {
+		if resp, _ := e.do(http.MethodPut, bad, `{}`); resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s: %d", bad, resp.StatusCode)
+		}
+	}
+	if resp, _ := e.do(http.MethodPut, "/api/admin/people/carl", `{not json`); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid JSON: %d", resp.StatusCode)
+	}
+	var puts []string
+	for _, c := range e.admin.calls {
+		if strings.HasPrefix(c, "PUT") {
+			puts = append(puts, c)
+		}
+	}
+	if len(puts) != 1 || puts[0] != `PUT /v1/admin/identities/carl {"roles":["member"],"attributes":{"projects":["p1","p2"]}}` {
+		t.Fatalf("admin API saw %q", puts)
+	}
+}
+
+func TestProfilesNameOnlyKnownRights(t *testing.T) {
+	e := newEnv(t)
+	e.signIn("root")
+	if resp, _ := e.do(http.MethodPut, "/api/admin/profiles", `{"profiles":[{"id":"x","name":"X","rights":["fly"]}]}`); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("an unknown right: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(http.MethodPut, "/api/admin/profiles", `{"profiles":[{"id":"viewer","name":"Viewer","rights":["open"]}]}`); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("a valid profile: %d", resp.StatusCode)
+	}
+	if _, body := e.do(http.MethodGet, "/api/admin/rights", ""); !strings.Contains(body, `"id":"viewer"`) || strings.Contains(body, `"id":"steward"`) {
+		t.Fatalf("profiles after the change %s", body)
 	}
 }

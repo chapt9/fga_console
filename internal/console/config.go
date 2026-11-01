@@ -27,6 +27,13 @@ type Config struct {
 	Organisation string `json:"organisation"`
 	// StorageURL is fga's file API (fga-storage).
 	StorageURL string `json:"storage_url"`
+	// AdminURL is fga's admin API (fga-admin serve), which decides who is
+	// an administrator. Without it the console has no administrator pages.
+	AdminURL      string `json:"admin_url,omitempty"`
+	AdminAudience string `json:"admin_audience,omitempty"`
+	// Services lists fga's services for the Servers page: their health
+	// addresses, which the console checks.
+	Services []Service `json:"services,omitempty"`
 	// Spaces names the spaces the console offers. fga's file API cannot yet
 	// list the spaces a person may see, so the console asks fga about each
 	// of these and shows only those fga lets the person list.
@@ -36,6 +43,14 @@ type Config struct {
 	SessionHours int        `json:"session_hours,omitempty"`
 	MaxUploadMB  int64      `json:"max_upload_mb,omitempty"`
 	DevSignIn    *DevSignIn `json:"dev_signin,omitempty"`
+}
+
+// Service is one fga service the Servers page shows.
+type Service struct {
+	Name    string `json:"name"`
+	Purpose string `json:"purpose"`
+	Host    string `json:"host"`
+	Health  string `json:"health"`
 }
 
 // DevSignIn is development sign-in: the console mints short-lived passes
@@ -83,6 +98,9 @@ func LoadConfig(path string) (*Config, error) {
 	if c.MaxUploadMB == 0 {
 		c.MaxUploadMB = 512
 	}
+	if c.AdminAudience == "" {
+		c.AdminAudience = "fga-admin"
+	}
 	return &c, c.Validate()
 }
 
@@ -109,6 +127,20 @@ func (c *Config) Validate() error {
 		bad("storage_url must be an http(s) URL")
 	} else if u.Scheme == "http" && !loopback(u.Hostname()) {
 		bad("storage_url may use plain http only on this machine (loopback)")
+	}
+	if c.AdminURL != "" {
+		u, err := url.Parse(c.AdminURL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			bad("admin_url must be an http(s) URL")
+		} else if u.Scheme == "http" && !loopback(u.Hostname()) {
+			bad("admin_url may use plain http only on this machine (loopback)")
+		}
+	}
+	for _, sv := range c.Services {
+		u, err := url.Parse(sv.Health)
+		if sv.Name == "" || err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			bad("services: each needs a name and an http(s) health address")
+		}
 	}
 	if len(c.Spaces) == 0 {
 		bad("spaces must name at least one space")

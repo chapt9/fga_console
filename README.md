@@ -11,13 +11,16 @@ console never judges access, keeps no files and holds no file keys.
 
 ```
 browser ──HTTPS──> fga-console ──HTTPS──> fga-storage (file API) ──> fga-decision, fga-keys, fga-kms
-                    sessions,               fga-admin serve (admin API, part 2)
+                    sessions,               fga-admin serve (admin API)
                     passes
 ```
 
 ## Status
 
-Part 1 of 3 works against a running fga:
+Parts 1 and 2 of 3 work against a running fga.
+
+### Part 1: people's own pages
+
 
 - development sign-in: pick a person, and the console mints short-lived
   passes in fga's format with the development issuer's key;
@@ -33,9 +36,31 @@ Part 1 of 3 works against a running fga:
 End-to-end encrypted spaces are listed, but their files are opened and
 uploaded with the fga program, which holds the person's keys.
 
-Next: part 2, the administrator's pages over fga's admin API (`fga-admin
-serve`); part 3, sign-in with the organisation's login (OIDC), certificates
-between the console and fga, and a deployment guide.
+### Part 2: the administrator's pages
+
+Who is an administrator is decided by fga's admin API (its `admin.json`),
+never by the console. An administrator's actions go to the admin API with
+their own pass, and fga checks and records each one.
+
+- **Overview** from fga's own counts, latest events and service health;
+- **People**: rights (each a set of fga capabilities), projects and team
+  leads (the `projects` and `leads` attributes the rules test), roles,
+  disabling; filters such as "cannot share", and changes for many people
+  at once. Taking a right never takes a capability another kept right needs;
+- **Rights and profiles**: the console's rights, and profiles (ready-made
+  sets of rights) kept in the console's data folder;
+- **AI agents**: permissions to act for someone (fga delegations);
+- **Spaces**: list and create;
+- **Rules**: the signed rules in plain words; editing makes a draft, kept
+  by the console and exported for signing outside it;
+- **Audit log**: fga's latest events;
+- **Servers**: each configured service's health, checked live, and
+  settings files to export (never pushed to a running server).
+
+Next: part 3, sign-in with the organisation's login (OIDC), certificates
+between the console and fga, and a deployment guide. Projects as something
+fga knows, removing spaces, the access graph and a check-access call need
+fga changes first.
 
 ### Gaps in fga's file API
 
@@ -57,27 +82,36 @@ Build it outside the repository and start it with a configuration file:
     go build -o /tmp/fga-console ./cmd/fga-console
     /tmp/fga-console -config console.json
 
-For the fga demo (development profile, loopback only):
+For the fga demo (development profile, loopback only), with fga's admin
+API on port 18450 and `root` as its administrator:
 
 ```json
 {"version": 1, "listen": "127.0.0.1:28600", "tenant": "t-acme", "organisation": "Acme (demo)",
- "storage_url": "http://127.0.0.1:28441", "spaces": ["shared", "reports"], "data_dir": "data",
+ "storage_url": "http://127.0.0.1:28441", "admin_url": "http://127.0.0.1:18450",
+ "spaces": ["shared", "reports"], "data_dir": "data",
+ "services": [{"name": "fga-storage", "purpose": "Stores files and documents", "host": "this machine",
+               "health": "http://127.0.0.1:28441/readyz"}],
  "dev_signin": {"issuer": "fga-dev", "key_id": "tok-1", "key_file": "<demo>/issuer.key",
-                "people": ["alice", "bob", "carl", "lena"]}}
+                "people": ["root", "alice", "bob", "carl", "lena"]}}
 ```
+
+The admin API must name this console: in development, its
+`dev_console_id` (listed in its `consoles`); in production, the console's
+certificate (part 3).
 
 Development sign-in, and plain HTTP to fga, are refused unless the address
 is on this machine (loopback). `data_dir` keeps the console's own small
-records (which shares were given together); fga keeps everything else.
+records (which shares were given together, profiles, a rule draft); fga
+keeps everything else.
 
-`go test ./...` runs the console's tests against a stand-in for fga's file
-API that checks every pass the console sends.
+`go test ./...` runs the console's tests against stand-ins for fga's file
+and admin APIs that check every pass the console sends.
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `cmd/fga-console` | the program |
-| `internal/console` | configuration, passes, sessions, the console's API |
+| `internal/console` | configuration, passes, sessions, the console's API, rights and profiles |
 | `web` | the pages (plain JavaScript, CSS and SVG, no third-party code), built into the program |
 | `design-mockup` | the design mockup the pages were drawn from; not served, kept for parts 2 and 3 |

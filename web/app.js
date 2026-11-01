@@ -47,6 +47,18 @@
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
     warn: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',
     eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+    home: '<path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1z"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4.4 4.2-6.5 8-6.5s7 2.1 8 6.5"/>',
+    key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l3 3"/>',
+    bot: '<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01M9.5 16.5h5"/>',
+    policy: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M10 12h5M10 16h5"/>',
+    audit: '<path d="M8 4h8M8 4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2"/><path d="M9 11l2 2 4-4M9 17h6"/>',
+    server: '<rect x="4" y="4" width="16" height="7" rx="1.5"/><rect x="4" y="13" width="16" height="7" rx="1.5"/><path d="M8 7.5h.01M8 16.5h.01"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    back: '<path d="M15 6l-6 6 6 6"/>',
+    link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
+    tech: '<path d="M8 8l-4 4 4 4M16 8l4 4-4 4M13.5 6l-3 12"/>',
   };
   const icon = (n, cls = "") => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ""}</svg>`;
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -116,23 +128,32 @@
 
   // ---------------------------------------------------------------- shell
 
+  // routes maps each page to its renderer; admin.js adds the
+  // administrator's pages, which only people fga accepts as administrators
+  // reach (and the admin API refuses everyone else in any case).
+  const routes = { "/files": renderFiles, "/approvals": renderApprovals };
+  const home = () => (session && session.admin ? "/admin" : "/files");
   function route() {
-    const path = (location.hash.slice(1) || "/files").split("?")[0];
+    const path = (location.hash.slice(1) || home()).split("?")[0];
     closeDrawer();
     if (!session || !session.signed_in) { if (path !== "/signin") return go("/signin"); return renderSignIn(); }
-    if (path === "/signin") return go("/files");
-    const page = { "/files": renderFiles, "/approvals": renderApprovals }[path];
-    if (!page) return go("/files");
-    page();
+    if (path === "/signin") return go(home());
+    const page = routes[path];
+    if (!page || (path.startsWith("/admin") && !session.admin)) return go(home());
+    page(params());
   }
 
   function shell(title, sub, body) {
     if (!session || !session.signed_in) return;
-    const nav = (p, ic, label) => `<a href="#${p}" class="${location.hash.startsWith("#" + p) ? "active" : ""}">${icon(ic)}<span class="lbl">${esc(label)}</span></a>`;
+    const cur = location.hash.slice(1).split("?")[0];
+    const nav = (p, ic, label) => `<a href="#${p}" class="${cur === p ? "active" : ""}">${icon(ic)}<span class="lbl">${esc(label)}</span></a>`;
     app.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">${icon("mark")}</span>` +
-      `<span>fga console<small>${esc(session.organisation)}</small></span></div><nav class="nav"><div class="nav-section">Workspace</div>` +
-      `${nav("/files", "files", "Files")}${nav("/approvals", "inbox", "Approvals")}</nav>` +
-      `<div class="me">${avatar(session.person)}<div><b>${esc(displayName(session.person))}</b><span class="muted">${esc(session.person)}</span></div>` +
+      `<span>fga console<small>${esc(session.organisation)}</small></span></div><nav class="nav">` +
+      (session.admin ? `<div class="nav-section">Administration</div>${nav("/admin", "home", "Overview")}${nav("/admin/people", "users", "People")}` +
+        `${nav("/admin/rights", "key", "Rights")}${nav("/admin/agents", "bot", "AI agents")}${nav("/admin/spaces", "bucket", "Spaces")}` +
+        `${nav("/admin/rules", "policy", "Rules")}${nav("/admin/audit", "audit", "Audit log")}${nav("/admin/servers", "server", "Servers")}` : "") +
+      `<div class="nav-section">Workspace</div>${nav("/files", "files", "Files")}${nav("/approvals", "inbox", "Approvals")}</nav>` +
+      `<div class="me">${avatar(session.person)}<div><b>${esc(displayName(session.person))}</b><span class="muted">${esc(session.admin ? "Administrator" : session.person)}</span></div>` +
       `<button class="btn ghost icon sm" data-act="signOut" title="Sign out" aria-label="Sign out">${icon("logout")}</button></div></aside>` +
       `<main class="main"><header class="topbar"><h1>${esc(title)}</h1>${sub ? `<span class="sub">${sub}</span>` : ""}<span class="spacer"></span>` +
       (session.dev ? `<span class="pill" title="People sign in by picking a name; for development only">Development sign-in</span>` : "") +
@@ -177,7 +198,7 @@
     const r = await api("POST", "/api/signin", { person: d.id });
     if (!r.ok) return toast(plainError(r.error), "bad");
     await start();
-    go("/files");
+    go(home());
   };
   acts.signOut = async () => {
     await api("POST", "/api/signout");
@@ -619,6 +640,11 @@
     });
   }
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+
+  window.FGA_CONSOLE = {
+    W, acts, routes, api, icon, esc, avatar, displayName, when, day, bytes, plural, val, toast, plainError, shell, pageHead, loading,
+    openDrawer, closeDrawer, confirmBox, go, params, route, session: () => session,
+  };
 
   async function loadSession() {
     const r = await api("GET", "/api/session");

@@ -31,6 +31,8 @@ type Server struct {
 	sessions *Sessions
 	store    *Store
 	storage  *url.URL
+	admin    *url.URL
+	admins   adminCache
 	client   *http.Client
 	web      fs.FS
 	log      *slog.Logger
@@ -52,9 +54,15 @@ func New(cfg *Config, web fs.FS, client *http.Client, log *slog.Logger, now func
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, minter: NewMinter(cfg.DevSignIn.Issuer, cfg.DevSignIn.KeyID, cfg.Tenant, key, now),
+	s := &Server{cfg: cfg, minter: NewMinter(cfg.DevSignIn.Issuer, cfg.DevSignIn.KeyID, cfg.Tenant, key, now),
 		sessions: NewSessions(time.Duration(cfg.SessionHours)*time.Hour, 30*time.Minute, now), store: store,
-		storage: u, client: client, web: web, log: log, now: now}, nil
+		storage: u, admins: adminCache{seen: map[string]time.Time{}}, client: client, web: web, log: log, now: now}
+	if cfg.AdminURL != "" {
+		if s.admin, err = url.Parse(cfg.AdminURL); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
 }
 
 // Handler returns the console's routes: the pages, and the API the pages
@@ -85,6 +93,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/batches/{id}/take-back", s.authed(s.takeBack))
 	mux.HandleFunc("GET /api/approvals", s.authed(s.approvals))
 	mux.HandleFunc("POST /api/approvals/{id}", s.authed(s.decideApproval))
+	s.adminRoutes(mux)
 	return s.logged(secureHeaders(mux))
 }
 
@@ -259,6 +268,7 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(SessionCookie); err == nil {
 		if ss, ok := s.sessions.Get(c.Value); ok {
 			out["signed_in"], out["person"] = true, ss.Person
+			out["admin"] = s.isAdmin(r.Context(), ss.Person)
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

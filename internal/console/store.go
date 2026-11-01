@@ -35,6 +35,11 @@ type Store struct {
 	mu      sync.Mutex
 	path    string
 	Batches []Batch `json:"batches"`
+	// ProfileList is nil until an administrator changes the profiles.
+	ProfileList []Profile `json:"profiles,omitempty"`
+	// RulesDraft is the rule draft an administrator is editing, as the
+	// pages wrote it; it becomes rules only when signed outside the console.
+	RulesDraft json.RawMessage `json:"rules_draft,omitempty"`
 }
 
 // OpenStore reads the store in dir, or starts an empty one.
@@ -75,6 +80,39 @@ func (s *Store) save() error {
 		return err
 	}
 	return os.Rename(tmp, s.path)
+}
+
+// Profiles returns the profiles, the defaults until changed.
+func (s *Store) Profiles() []Profile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ProfileList == nil {
+		return DefaultProfiles
+	}
+	return s.ProfileList
+}
+
+// SetProfiles replaces the profiles.
+func (s *Store) SetProfiles(p []Profile) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ProfileList = p
+	return s.save()
+}
+
+// Draft returns the rule draft, or nil.
+func (s *Store) Draft() json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.RulesDraft
+}
+
+// SetDraft replaces the rule draft; nil discards it.
+func (s *Store) SetDraft(d json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.RulesDraft = d
+	return s.save()
 }
 
 // AddBatch records a batch.

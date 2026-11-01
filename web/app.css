@@ -636,3 +636,4 @@ ul.tight { margin: 4px 0 10px; padding-left: 18px; } ul.tight li { margin-bottom
 .sub-form { margin: 10px 0 0 26px; }
 .empty.small { padding: 20px; font-size: 13px; }
 .tbl th.num, .tbl td.num { width: 1%; white-space: nowrap; }
+.spaced-sm { margin-top: 8px; }
