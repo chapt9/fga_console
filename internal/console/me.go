@@ -81,6 +81,14 @@ func (s *Server) me(ctx context.Context, person string) ([]string, bool, error) 
 	return rights, rights != nil, nil
 }
 
+// forgetMe drops fga's remembered answer for person, so the next request
+// asks again: after they sign in, and after they are added.
+func (s *Server) forgetMe(person string) {
+	s.mes.mu.Lock()
+	delete(s.mes.seen, person)
+	s.mes.mu.Unlock()
+}
+
 // user admits a signed-in person whom fga lets use the console.
 func (s *Server) user(fn handler) http.HandlerFunc {
 	return s.authed(func(w http.ResponseWriter, r *http.Request, person string) {

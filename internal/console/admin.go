@@ -77,6 +77,7 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 		w.WriteHeader(http.StatusNoContent)
 	})))
 	mux.HandleFunc("GET /api/admin/servers", s.authed(s.adminOnly(s.servers)))
+	s.invitationRoutes(mux)
 }
 
 // callAdmin sends one request to fga's admin API with a fresh admin pass

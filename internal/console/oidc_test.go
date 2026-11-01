@@ -49,6 +49,8 @@ type fakeIdP struct {
 	spoil        string
 	refuseRenew  bool
 	accessIssued []string
+	// subject and name are who signs in next; alice by default.
+	subject, name string
 }
 
 func newFakeIdP(t *testing.T, fgaKey ed25519.PrivateKey) *fakeIdP {
@@ -115,8 +117,12 @@ func randBytes(n int) []byte { b := make([]byte, n); rand.Read(b); return b }
 
 func (p *fakeIdP) tokens(w http.ResponseWriter, nonce string) {
 	now := time.Now()
-	idc := map[string]any{"iss": p.srv.URL, "sub": "alice", "aud": "fga-console", "exp": now.Add(time.Hour).Unix(), "iat": now.Unix(),
-		"nonce": nonce, "name": "Alice Example"}
+	sub, name := "alice", "Alice Example"
+	if p.subject != "" {
+		sub, name = p.subject, p.name
+	}
+	idc := map[string]any{"iss": p.srv.URL, "sub": sub, "aud": "fga-console", "exp": now.Add(time.Hour).Unix(), "iat": now.Unix(),
+		"nonce": nonce, "name": name}
 	if p.spoil == "nonce" {
 		idc["nonce"] = "other"
 	}
@@ -132,7 +138,7 @@ func (p *fakeIdP) tokens(w http.ResponseWriter, nonce string) {
 	if p.spoil == "sig" {
 		sig[0] ^= 1
 	}
-	at := signAccess(p.fgaKey, "alice", []string{"fga-storage", "fga-admin"}, p.lifetime)
+	at := signAccess(p.fgaKey, sub, []string{"fga-storage", "fga-admin"}, p.lifetime)
 	p.mu.Lock()
 	p.accessIssued = append(p.accessIssued, at)
 	p.mu.Unlock()
@@ -378,5 +384,102 @@ func TestOIDCSignInFinishesOnlyInItsOwnBrowser(t *testing.T) {
 	}
 	if resp, err := b.Get(callback); err != nil || resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("another browser finished the sign-in: %v %d", err, resp.StatusCode)
+	}
+}
+
+// An invitation is a one-time link. The person signs in with it, the
+// console records the name their login gives, and only an administrator's
+// confirmation creates them in fga, with the invitation's roles, projects
+// and profile, through fga's admin API. A person fga knows already is
+// never replaced, and invitations need the organisation's login.
+func TestInvitation(t *testing.T) {
+	e := newOIDCEnv(t)
+	e.fga.noConsole = map[string]bool{"dana-7f3a": true, "eve": true}
+	browser := func(subject, name string) *env {
+		jar, _ := cookiejar.New(nil)
+		b := &env{t: t, admin: e.admin, fga: e.fga, console: e.console, client: &http.Client{Jar: jar}}
+		e.idp.subject, e.idp.name = subject, name
+		return b
+	}
+	invite := func(admin *env, name string) (string, string) {
+		t.Helper()
+		resp, body := admin.do(http.MethodPost, "/api/admin/invitations", `{"name":"`+name+`","profile":"reader","roles":["member"],"projects":["p1"],"days":3}`)
+		var out struct {
+			Invitation Invitation `json:"invitation"`
+			Link       string     `json:"link"`
+		}
+		if resp.StatusCode != http.StatusCreated || json.Unmarshal([]byte(body), &out) != nil || !strings.HasPrefix(out.Link, e.console.URL+"/invite/") {
+			t.Fatalf("invite: %d %s", resp.StatusCode, body)
+		}
+		return out.Invitation.ID, out.Link
+	}
+	root := browser("root", "Root Admin")
+	if resp, err := root.client.Get(e.console.URL + "/auth/login"); err != nil || resp.Request.URL.Path != "/" {
+		t.Fatalf("root's sign-in: %v", err)
+	}
+	if resp, _ := root.do(http.MethodPost, "/api/admin/invitations", `{"name":"X","profile":"nobody","days":3}`); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("an unknown profile: %d", resp.StatusCode)
+	}
+	id, link := invite(root, "Dana Lee")
+
+	dana := browser("dana-7f3a", "Dana Lee")
+	if resp, err := dana.client.Get(link); err != nil || resp.StatusCode != http.StatusOK || resp.Request.URL.Path != "/" {
+		t.Fatalf("dana's sign-in with the link: %v", err)
+	}
+	if _, body := dana.do(http.MethodGet, "/api/session", ""); !strings.Contains(body, `"person":"dana-7f3a"`) ||
+		!strings.Contains(body, `"invited":true`) || !strings.Contains(body, `"access":false`) {
+		t.Fatalf("dana's session %s", body)
+	}
+	again := browser("eve", "Eve")
+	if resp, err := again.client.Get(link); err != nil || resp.StatusCode != http.StatusGone {
+		t.Fatalf("the link used a second time: %v %d", err, resp.StatusCode)
+	}
+	alice := browser("alice", "Alice Example")
+	alice.client.Get(e.console.URL + "/auth/login")
+	if resp, _ := alice.do(http.MethodGet, "/api/admin/invitations", ""); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("alice listing invitations: %d", resp.StatusCode)
+	}
+
+	if _, body := root.do(http.MethodGet, "/api/admin/invitations", ""); !strings.Contains(body, `"state":"waiting"`) ||
+		!strings.Contains(body, `"person":"dana-7f3a"`) || strings.Contains(body, "digest") || strings.Contains(body, strings.TrimPrefix(link, e.console.URL+"/invite/")) {
+		t.Fatalf("invitations %s", body)
+	}
+	if resp, body := root.do(http.MethodPost, "/api/admin/invitations/"+id+"/confirm", ""); resp.StatusCode != http.StatusOK || strings.Contains(body, "rights_error") {
+		t.Fatalf("confirm: %d %s", resp.StatusCode, body)
+	}
+	if resp, _ := root.do(http.MethodPost, "/api/admin/invitations/"+id+"/confirm", ""); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("confirmed twice: %d", resp.StatusCode)
+	}
+	grant, _ := json.Marshal(map[string]any{"capabilities": (&Server{store: &Store{}}).profileCapabilities("reader")})
+	want := []string{`PUT /v1/admin/identities/dana-7f3a {"attributes":{"projects":["p1"]},"roles":["member"]}`,
+		"POST /v1/admin/identities/dana-7f3a/capabilities/grant " + string(grant)}
+	var changes []string
+	for _, c := range e.admin.calls {
+		if !strings.HasPrefix(c, "GET ") {
+			changes = append(changes, c)
+		}
+	}
+	if len(changes) != 2 || changes[0] != want[0] || changes[1] != want[1] {
+		t.Fatalf("admin API saw %q", changes)
+	}
+
+	// fga knows alice already: her invitation is never confirmed over her.
+	id, link = invite(root, "Alice again")
+	alice = browser("alice", "Alice Example")
+	alice.client.Get(link)
+	if resp, body := root.do(http.MethodPost, "/api/admin/invitations/"+id+"/confirm", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, "ALREADY_KNOWN") {
+		t.Fatalf("confirming someone fga knows: %d %s", resp.StatusCode, body)
+	}
+	for _, c := range e.admin.calls {
+		if strings.Contains(c, "identities/alice") {
+			t.Fatalf("the admin API was asked to change alice: %s", c)
+		}
+	}
+
+	d := newEnv(t)
+	d.signIn("root")
+	if resp, body := d.do(http.MethodPost, "/api/admin/invitations", `{"name":"X","profile":"reader","days":3}`); resp.StatusCode != http.StatusConflict ||
+		!strings.Contains(body, "INVITATIONS_NEED_LOGIN") {
+		t.Fatalf("an invitation with development sign-in: %d %s", resp.StatusCode, body)
 	}
 }

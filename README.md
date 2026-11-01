@@ -47,7 +47,11 @@ their own pass, and fga checks and records each one.
 - **People**: rights (each a set of fga capabilities), projects and team
   leads (the `projects` and `leads` attributes the rules test), roles,
   disabling; filters such as "cannot share", and changes for many people
-  at once. Taking a right never takes a capability another kept right needs;
+  at once. Taking a right never takes a capability another kept right needs.
+  **Invitations** (with the organisation's login only): a one-time link for
+  a name, a profile, roles and projects; the person signs in with it, and
+  an administrator then adds them to fga by the name their login gave. The
+  console keeps only a digest of each link;
 - **Rights and profiles**: the console's rights, and profiles (ready-made
   sets of rights) kept in the console's data folder;
 - **AI agents**: permissions to act for someone (fga delegations);

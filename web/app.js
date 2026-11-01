@@ -104,6 +104,7 @@
     CROSS_SITE: "Refused: the request did not come from this console",
     UNKNOWN_PERSON: "That person can't sign in here",
     NO_CONSOLE_ACCESS: "fga doesn't let you use this console",
+    INVITATIONS_NEED_LOGIN: "Invitations need the organisation's login, not development sign-in",
   };
   const plainError = code => ERRORS[code] || `fga refused (${code || "error"})`;
 
@@ -609,6 +610,7 @@
   // has a page.
   function renderNoPages() {
     const text = session.access_error ? "fga can't be reached right now, so the console can't tell which pages are yours. Try again in a moment."
+      : session.invited ? "Thank you for signing in. An administrator now adds you; sign in again once they have."
       : !session.access ? "fga doesn't let you use this console. An administrator can give you the right “Use the web console”."
       : "fga lets you use this console, but none of your rights has a page here yet. An administrator can give you more rights.";
     shell("Welcome", "", `<div class="page">${pageHead("Welcome")}<div class="card"><div class="empty">${icon("lock")}<div>${esc(text)}</div></div></div></div>`);

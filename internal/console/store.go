@@ -40,6 +40,8 @@ type Store struct {
 	// RulesDraft is the rule draft an administrator is editing, as the
 	// pages wrote it; it becomes rules only when signed outside the console.
 	RulesDraft json.RawMessage `json:"rules_draft,omitempty"`
+	// Invitations are the people invited to sign in (invitations.go).
+	Invitations []Invitation `json:"invitations,omitempty"`
 }
 
 // OpenStore reads the store in dir, or starts an empty one.

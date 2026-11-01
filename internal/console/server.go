@@ -99,6 +99,7 @@ func (s *Server) Handler() http.Handler {
 	if s.oidc != nil {
 		mux.HandleFunc("GET /auth/login", s.login)
 		mux.HandleFunc("GET /auth/callback", s.callback)
+		mux.HandleFunc("GET /invite/{secret}", s.invite)
 	}
 	mux.HandleFunc("GET /api/spaces", s.user(s.spaces))
 	mux.HandleFunc("GET /api/files", s.user(s.listFiles))
@@ -327,6 +328,7 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		out["admin"] = s.isAdmin(ctx, ss.Person)
 		rights, ok, err := s.me(ctx, ss.Person)
 		out["access"], out["rights"] = ok, rights
+		out["invited"] = !ok && s.store.Waiting(ss.Person)
 		if err != nil {
 			out["access_error"] = "UNAVAILABLE"
 		}
@@ -356,6 +358,7 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, cookie(ss.ID, s.cfg.SessionHours*3600, s.secure()))
 	s.log.Info("signed in", "person", body.Person)
+	s.forgetMe(body.Person)
 	writeJSON(w, http.StatusOK, map[string]string{"person": ss.Person})
 }
 

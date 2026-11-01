@@ -58,6 +58,9 @@ type providerMeta struct {
 type pendingLogin struct {
 	nonce, verifier string
 	created         time.Time
+	// invite is the digest of the invitation link the sign-in started
+	// from, if any.
+	invite string
 }
 
 type jwk struct {
@@ -358,7 +361,10 @@ func loginCookieName(secure bool) string {
 // login sends the browser to the login service. The state, nonce and PKCE
 // verifier stay on the server; a short-lived cookie ties the browser to its
 // own sign-in, and is sent on the provider's redirect back (SameSite Lax).
-func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+func (s *Server) login(w http.ResponseWriter, r *http.Request) { s.startLogin(w, r, "") }
+
+// startLogin is login, remembering the invitation it started from.
+func (s *Server) startLogin(w http.ResponseWriter, r *http.Request, invite string) {
 	p := s.oidc
 	m, err := p.metadata(r.Context())
 	if err != nil {
@@ -385,7 +391,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		authPage(w, http.StatusServiceUnavailable, "Too many sign-ins at once. Try again in a moment.")
 		return
 	}
-	p.pending[state] = pendingLogin{nonce: nonce, verifier: verifier, created: now}
+	p.pending[state] = pendingLogin{nonce: nonce, verifier: verifier, created: now, invite: invite}
 	p.mu.Unlock()
 	q := url.Values{"response_type": {"code"}, "client_id": {p.cfg.ClientID}, "redirect_uri": {p.redirect},
 		"scope": {strings.Join(p.cfg.Scopes, " ")}, "state": {state}, "nonce": {nonce},
@@ -449,6 +455,14 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	ss.setTokens(t, s.now())
 	http.SetCookie(w, cookie(ss.ID, s.cfg.SessionHours*3600, secure))
 	s.log.Info("signed in", "person", person)
+	s.forgetMe(person)
+	if pl.invite != "" {
+		if inv, err := s.store.ClaimInvitation(pl.invite, person, ss.Name, s.now()); err != nil {
+			s.log.Info("invitation not claimed", "person", person, "err", err)
+		} else {
+			s.log.Info("invitation claimed", "id", inv.ID, "person", person)
+		}
+	}
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 

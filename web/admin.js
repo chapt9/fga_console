@@ -139,6 +139,7 @@
     const opts = (list, cur, all) => `<option value="">${all}</option>` + list.map(([v, t]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(t)}</option>`).join("");
     shell("People", "", `<div class="page wide">${pageHead("People",
       "Everyone fga knows in this organisation. Their <b>rights</b> are the most they may ever do; their <b>projects</b> and <b>roles</b> decide where the rules let them do it.",
+      (C.session().dev ? "" : `<button class="btn" data-act="invitePerson">${icon("link")}Invite someone</button>`) +
       `<button class="btn primary" data-act="editPerson" data-new="1">${icon("plus")}Add a person</button>`)}` +
       `<div class="card"><div class="card-head filters"><input class="input search" placeholder="Search by name" value="${esc(pf.q)}" data-on-input="pfQ" aria-label="Search people">` +
       `<select class="input" data-on-change="pfSet" data-k="right" aria-label="Rights"><option value="">Any rights</option>` +
@@ -148,9 +149,78 @@
       `<select class="input" data-on-change="pfSet" data-k="project" aria-label="Project">${opts(allProjects().map(x => [x, x]), pf.project, "All projects")}</select>` +
       `<select class="input" data-on-change="pfSet" data-k="role" aria-label="Role">${opts(allRoles().map(x => [x, W.role(x).one]), pf.role, "All roles")}</select>` +
       `<select class="input" data-on-change="pfSet" data-k="status" aria-label="Status">${opts([["active", "Active"], ["disabled", "Disabled"]], pf.status, "Active and disabled")}</select></div>` +
-      `<div id="peopleRows">${peopleRows()}</div></div></div>`);
+      `<div id="peopleRows">${peopleRows()}</div></div><div id="invitations"></div></div>`);
     if (params.get("new")) acts.editPerson({ new: "1" });
+    refreshInvitations();
   };
+
+  // ---------------------------------------------------------------- invitations
+
+  // An invitation is a one-time link for someone fga does not know yet. They
+  // sign in with it at the organisation's login, and an administrator then
+  // adds them to fga with the invitation's profile, roles and projects.
+  async function refreshInvitations() {
+    const box = document.getElementById("invitations");
+    if (!box) return;
+    const r = await api("GET", "/api/admin/invitations");
+    const list = r.ok ? (r.data.invitations || []).filter(i => i.state === "open" || i.state === "waiting") : [];
+    box.innerHTML = !list.length ? "" : `<div class="card spaced"><div class="card-head"><h3>Invitations</h3></div>` + list.map(i => {
+      const what = i.state === "waiting"
+        ? `signed in as ${tech(i.person)}${i.person_name ? ` (${esc(i.person_name)})` : ""}, waiting for you`
+        : `link not used yet, until ${esc(day(i.expires))}`;
+      return `<div class="list-row">${avatar(i.name)}<div class="grow"><b>${esc(i.name)}</b>` +
+        `<div class="muted small">${esc((profiles.find(p => p.id === i.profile) || { name: i.profile }).name)}, ${what}</div></div>` +
+        (i.state === "waiting" ? `<button class="btn sm primary" data-act="confirmInvite" data-id="${esc(i.id)}" data-name="${esc(i.name)}">Add to fga</button>` : "") +
+        `<button class="btn sm ghost" data-act="cancelInvite" data-id="${esc(i.id)}" data-name="${esc(i.name)}">Cancel</button></div>`;
+    }).join("") + `</div>`;
+  }
+  acts.invitePerson = () => openDrawer("Invite someone",
+    `<p class="muted small">They get a one-time link, sign in with it at your organisation's login, and wait until you add them. Until then fga does not know them, so they can do nothing.</p>` +
+    `<label class="field"><span>Name</span><input class="input" id="fInvName" placeholder="Dana Lee" autocomplete="off"></label>` +
+    `<label class="field"><span>Profile</span><select class="input" id="fInvProfile">` +
+      profiles.map(p => `<option value="${esc(p.id)}" ${p.id === "member" ? "selected" : ""}>${esc(p.name)}: ${esc(p.help)}</option>`).join("") + `</select></label>` +
+    `<label class="field"><span>Roles</span><input class="input" id="fInvRoles" value="member" autocomplete="off"><small>Separated by commas. Rules name roles; a role no rule names gives nothing.</small></label>` +
+    `<label class="field"><span>Projects</span><input class="input" id="fInvProjects" placeholder="p1, p2" autocomplete="off"></label>` +
+    `<label class="field"><span>The link works for</span><select class="input" id="fInvDays">` +
+      [1, 3, 7, 14, 30].map(n => `<option value="${n}" ${n === 3 ? "selected" : ""}>${plural(n, "day")}</option>`).join("") + `</select></label>`,
+    `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn primary" id="inviteBtn" data-act="doInvite">Make the link</button>`);
+  const words = id => val(id).split(",").map(x => x.trim()).filter(Boolean);
+  acts.doInvite = async () => {
+    const name = val("fInvName").trim();
+    if (!name) return toast("Give their name", "bad");
+    const btn = document.getElementById("inviteBtn");
+    btn.disabled = true;
+    const r = await api("POST", "/api/admin/invitations",
+      { name, profile: val("fInvProfile"), roles: words("fInvRoles"), projects: words("fInvProjects"), days: Number(val("fInvDays")) });
+    if (!r.ok) { btn.disabled = false; return toast(fail(r.error), "bad"); }
+    openDrawer(`Invitation for ${name}`,
+      `<p>Send ${esc(name)} this link. It works once, until ${esc(day(r.data.invitation.expires))}, and the console shows it only now.</p>` +
+      `<div class="preview" id="inviteLink">${esc(r.data.link)}</div>` +
+      `<p class="muted small spaced">Once they have signed in, they appear under Invitations on this page, and you add them to fga.</p>`,
+      `<button class="btn" data-act="copyInvite">${icon("link")}Copy the link</button><span class="spacer"></span><button class="btn primary" data-act="closeDrawer">Done</button>`);
+    refreshInvitations();
+  };
+  acts.copyInvite = async () => {
+    try { await navigator.clipboard.writeText(document.getElementById("inviteLink").textContent); toast("Link copied", "ok"); }
+    catch { toast("Select the link and copy it", "bad"); }
+  };
+  acts.confirmInvite = d => confirmBox(`Add ${d.name} to fga?`,
+    `<p>fga then knows them by the name their login gave, with the invitation's profile, roles and projects. You can change them later like anyone else.</p>`,
+    "Add to fga", async () => {
+      const r = await api("POST", `/api/admin/invitations/${encodeURIComponent(d.id)}/confirm`);
+      if (!r.ok) return toast(r.error === "ALREADY_KNOWN" ? "fga knows this person already; change them under People" : fail(r.error), "bad");
+      await loadPeople();
+      refreshPeople();
+      refreshInvitations();
+      toast(r.data.rights_error ? `Added ${d.name}, but fga refused the rights: ${fail(r.data.rights_error)}` : `Added ${d.name}`, r.data.rights_error ? "bad" : "ok");
+    });
+  acts.cancelInvite = d => confirmBox(`Cancel the invitation for ${d.name}?`,
+    `<p>The link stops working. If they have signed in already, fga still does not know them.</p>`, "Cancel invitation", async () => {
+      const r = await api("POST", `/api/admin/invitations/${encodeURIComponent(d.id)}/cancel`);
+      if (!r.ok) return toast(fail(r.error), "bad");
+      refreshInvitations();
+      toast(`Invitation for ${d.name} cancelled`, "ok");
+    });
 
   function peopleList() {
     const q = pf.q.trim().toLowerCase(), r = pf.right;
