@@ -56,6 +56,13 @@ their own pass, and fga checks and records each one.
   sets of rights) kept in the console's data folder;
 - **AI agents**: permissions to act for someone (fga delegations);
 - **Spaces**: list and create;
+- **Data sources**: devices and systems that send readings; build a source
+  from a pasted sample (its fields, field groups with their sensitivity
+  and, end-to-end encrypted, their readers, and which document a reading
+  goes to), test the sample when saving, have another administrator
+  review it, and see how a device sends;
+- **Data tools**: views of a source's readings that AI agents call
+  through MCP; pick the fields, preview as yourself, publish, turn off;
 - **Rules**: the signed rules in plain words; editing makes a draft, kept
   by the console and exported for signing outside it;
 - **Audit log**: fga's latest events;
@@ -283,6 +290,9 @@ to fga with the signed-in person's pass, and fga decides them.
 | `GET /api/admin/rights`, `PUT /api/admin/profiles` | the console's rights and profiles | administrators |
 | `GET`, `PUT`, `DELETE /api/admin/rules/draft` | the rule draft | administrators |
 | `GET /api/admin/servers` | services' health | administrators |
+| `GET`, `POST /api/admin/sources`, `PUT …/{id}`, `POST …/{id}/try`, `…/review`, `…/disable` | data sources | administrators |
+| `GET`, `POST /api/admin/data-tools`, `PUT …/{id}`, `POST …/{id}/review`, `…/disable` | data tools | administrators |
+| `POST /api/data-tools/preview` | runs a draft data tool with the person's own access (fga's file API) | signed-in people |
 | `GET`, `POST /api/admin/invitations`; `POST …/{id}/confirm`, `…/cancel` | invitations | administrators |
 
 "Console users" are signed-in people whom fga lets read their own record

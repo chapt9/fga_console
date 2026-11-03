@@ -568,3 +568,36 @@ func TestConsoleAccessIsDecidedByFGA(t *testing.T) {
 		t.Fatalf("root listing spaces without the right: %d", resp.StatusCode)
 	}
 }
+
+// The data source and data tool pages' actions reach fga's admin API as
+// they are, with IDs checked first, and a preview reaches fga's file API
+// with the person's own pass (docs/design/mcp-data-tools.md in fga).
+func TestSourcesAndToolsAreForwarded(t *testing.T) {
+	e := newEnv(t)
+	e.signIn("root")
+	for _, c := range []struct{ method, path, want string }{
+		{http.MethodPost, "/api/admin/sources", "POST /v1/admin/sources {}"},
+		{http.MethodPut, "/api/admin/sources/greenhouse-climate", "PUT /v1/admin/sources/greenhouse-climate {}"},
+		{http.MethodPost, "/api/admin/sources/greenhouse-climate/try", "POST /v1/admin/sources/greenhouse-climate/try {}"},
+		{http.MethodPost, "/api/admin/sources/greenhouse-climate/review", "POST /v1/admin/sources/greenhouse-climate/review {}"},
+		{http.MethodPost, "/api/admin/sources/greenhouse-climate/disable", "POST /v1/admin/sources/greenhouse-climate/disable {}"},
+		{http.MethodPost, "/api/admin/data-tools", "POST /v1/admin/data-tools {}"},
+		{http.MethodPut, "/api/admin/data-tools/read_climate", "PUT /v1/admin/data-tools/read_climate {}"},
+		{http.MethodPost, "/api/admin/data-tools/read_climate/review", "POST /v1/admin/data-tools/read_climate/review {}"},
+		{http.MethodPost, "/api/admin/data-tools/read_climate/disable", "POST /v1/admin/data-tools/read_climate/disable {}"},
+	} {
+		e.do(c.method, c.path, `{}`)
+		if !slices.Contains(e.admin.calls, c.want) {
+			t.Errorf("%s %s: the admin API saw %q", c.method, c.path, e.admin.calls)
+		}
+	}
+	for _, bad := range []string{"/api/admin/sources/Greenhouse/review", "/api/admin/data-tools/read-climate/review", "/api/admin/data-tools/data.list/review"} {
+		if resp, _ := e.do(http.MethodPost, bad, `{}`); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: %d", bad, resp.StatusCode)
+		}
+	}
+	if resp, _ := e.do(http.MethodPost, "/api/data-tools/preview", `{"definition":{}}`); resp.StatusCode != http.StatusOK ||
+		!slices.Contains(e.fga.calls, "POST /v1/data-tools/preview root") {
+		t.Fatalf("preview %d: fga saw %q", resp.StatusCode, e.fga.calls)
+	}
+}

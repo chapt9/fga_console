@@ -483,6 +483,298 @@
     C.route();
   });
 
+  // ---------------------------------------------------------------- data sources and data tools
+
+  // A data source is a device or system that sends readings. fga splits
+  // each reading into field groups, each with its own sensitivity and, end
+  // to end encrypted, its own readers, so people and agents get only the
+  // groups they may read. A second administrator reviews every change. A
+  // data tool is a view of a source's readings that agents call through
+  // MCP; it grants nothing, and each call reads only what the caller may.
+  let sources = [], tools = [], sb = null, tb = null;
+  const enc = encodeURIComponent;
+  async function loadData() {
+    const [sr, tr] = await Promise.all([loadAll("/api/admin/sources"), loadAll("/api/admin/data-tools")]);
+    if (sr.ok) sources = sr.items;
+    if (tr.ok) tools = tr.items;
+    return sr.ok ? tr : sr;
+  }
+  const defOf = v => (v && v.definition) || null;
+  const versionText = x => [x.active ? `version ${x.active.version}` : "not active yet", x.draft ? `draft ${x.draft.version} to review` : ""]
+    .filter(Boolean).join(" · ");
+  const senders = id => people.filter(p => !p.disabled && p.roles.includes("source") &&
+    (Array.isArray(p.attributes.sources) ? p.attributes.sources : []).includes(id)).map(p => p.id);
+  const groupChips = def => (def ? def.groups : []).map(g => `<span class="chip" title="${esc(g.fields.join(", "))}">${esc(g.name)} · ` +
+    `${esc(W.label(g.label).name)}${g.recipients ? ` · ${esc(plural(g.recipients.length, "reader"))}` : ""}</span>`).join("");
+  const LABEL_NAMES = ["public", "internal", "confidential", "restricted"];
+  const labelOptions = cur => LABEL_NAMES.map(l => `<option value="${l}" ${l === cur ? "selected" : ""}>${esc(W.label(l).name)}</option>`).join("");
+  const radio = (name, act, cur, opts) => opts.map(([v, t]) => `<label class="check"><input type="radio" name="${name}" value="${v}" ` +
+    `data-on-change="${act}" ${v === cur ? "checked" : ""}>${esc(t)}</label>`).join("");
+  const reviewable = x => x.draft && x.draft.author !== C.session().person;
+
+  routes["/admin/sources"] = async () => {
+    shell("Data sources", "", `<div class="page wide">${loading("Asking fga…")}</div>`);
+    const [r] = await Promise.all([loadData(), loadPeople()]);
+    if (!r.ok) return shell("Data sources", "", `<div class="page">${pageHead("Data sources")}${loading(fail(r.error))}</div>`);
+    shell("Data sources", "", `<div class="page wide">${pageHead("Data sources",
+      `Devices and systems that ${esc(W.action("post-reading").label.toLowerCase())}. fga splits each reading into field groups; each group has its own sensitivity, so people and agents see only the groups they may read.`,
+      `<button class="btn primary" data-act="editSource">${icon("plus")}New data source</button>`)}` +
+      `<div class="card">${sources.length ? `<table class="tbl"><thead><tr><th>Source</th><th>Field groups</th><th class="hide-sm">Sent by</th><th>Version</th><th></th></tr></thead><tbody>` +
+        sources.map(s => `<tr><td><div class="obj">${icon(s.encryption === "client" ? "lock" : "upload")}<span><b>${esc(s.id)}</b>` +
+          `<small class="muted"> ${esc(s.project)} · ${esc(W.encryption(s.encryption).name)}</small></span></div></td>` +
+          `<td><div class="chips">${groupChips(defOf(s.active || s.draft))}</div></td>` +
+          `<td class="hide-sm">${esc(senders(s.id).join(", ") || "nobody yet")}</td>` +
+          `<td class="muted nowrap">${s.disabled ? "Stopped" : esc(versionText(s))}</td><td class="actions">` + (s.disabled ? "" :
+            (reviewable(s) ? `<button class="btn sm primary" data-act="reviewSource" data-id="${esc(s.id)}">Review</button>` : "") +
+            `<button class="btn sm" data-act="sendHelp" data-id="${esc(s.id)}">How to send</button>` +
+            `<button class="btn sm" data-act="editSource" data-id="${esc(s.id)}">Change</button>` +
+            `<button class="btn sm danger" data-act="stopSource" data-id="${esc(s.id)}">Stop</button>`) + `</td></tr>`).join("") +
+        `</tbody></table>` : `<div class="empty">${icon("upload")}<div>No data sources yet.</div></div>`}</div></div>`);
+  };
+
+  // The source builder keeps its state in sb; structural changes draw the
+  // drawer again, typing only updates sb.
+  acts.editSource = d => {
+    const s = sources.find(x => x.id === d.id), def = s && defOf(s.draft || s.active);
+    sb = !def ? { isNew: true, id: "", mode: "server", project: "", label: "internal", owner: "", fields: [], assign: {}, sample: "",
+      groups: [{ name: "reading", label: "internal", recipients: "" }], keyMode: "pointer", keyField: "", pattern: "[a-z0-9-]{1,48}", prefix: "", unlisted: "refuse" } :
+      { isNew: false, id: s.id, mode: s.encryption, project: s.project, label: s.label, owner: def.owner, sample: "",
+        groups: def.groups.map(g => ({ name: g.name, label: g.label, recipients: (g.recipients || []).join(", ") })),
+        fields: [...new Set([...def.groups.flatMap(g => g.fields), ...(def.key.pointer ? [def.key.pointer] : [])])],
+        assign: Object.fromEntries(def.groups.flatMap(g => g.fields.map(f => [f, g.name]))),
+        keyMode: def.key.mode, keyField: def.key.pointer || "", pattern: def.key.pattern || "", prefix: def.key.prefix || "", unlisted: def.unlisted || "refuse" };
+    sourceDrawer();
+  };
+  function sourceDrawer() {
+    const s = sb, client = s.mode === "client";
+    const groupOptions = cur => `<option value="">Not kept</option>` + s.groups.map(g => `<option ${g.name === cur ? "selected" : ""}>${esc(g.name)}</option>`).join("");
+    const input = (k, v, ph = "", extra = "") => `<input class="input" value="${esc(v)}" placeholder="${esc(ph)}" data-on-change="sbSet" data-k="${k}" autocomplete="off" ${extra}>`;
+    openDrawer(s.isNew ? "New data source" : `Change ${s.id}`,
+      (s.isNew ? `<label class="field"><span>Name</span>${input("id", s.id, "greenhouse-climate")}<small>Also the name of its space. Lowercase letters, digits and dashes.</small></label>` +
+        `<label class="field"><span>Project</span>${input("project", s.project, "p1", `list="sbProjects"`)}<datalist id="sbProjects">${allProjects().map(x => `<option value="${esc(x)}">`).join("")}</datalist></label>` +
+        `<label class="field"><span>Default sensitivity</span><select class="input" data-on-change="sbSet" data-k="label">${labelOptions(s.label)}</select></label>` +
+        `<div class="field"><span>Encryption</span>${radio("sbMode", "sbMode", s.mode, [["server", W.encryption("server").name], ["client", W.encryption("client").name]])}</div>` : "") +
+      `<label class="field"><span>Owner of the readings</span>${input("owner", s.owner, "lena", `list="sbPeople"`)}<datalist id="sbPeople">${people.filter(p => !p.disabled).map(p => `<option value="${esc(p.id)}">`).join("")}</datalist></label>` +
+      `<label class="field"><span>A sample reading</span><textarea class="input mono" rows="4" data-on-change="sbSet" data-k="sample" placeholder='{"sensor":"gh-1","temperature":21.5}'>${esc(s.sample)}</textarea>` +
+      `<small>Made-up values are fine: only the field names are used, and the sample is tested when you save.</small></label>` +
+      `<button class="btn sm" data-act="sbFields">Read its fields</button>` +
+      `<div class="field"><span>Field groups</span><table class="tbl"><thead><tr><th>Group</th><th>Sensitivity</th>${client ? "<th>Readers</th>" : ""}</tr></thead><tbody>` +
+        s.groups.map((g, i) => `<tr><td><input class="input" value="${esc(g.name)}" data-on-change="sbGroup" data-i="${i}" data-k="name"></td>` +
+          `<td><select class="input" data-on-change="sbGroup" data-i="${i}" data-k="label">${labelOptions(g.label)}</select></td>` +
+          (client ? `<td><input class="input" value="${esc(g.recipients)}" placeholder="lena, alice" data-on-change="sbGroup" data-i="${i}" data-k="recipients"></td>` : "") + `</tr>`).join("") +
+      `</tbody></table><button class="btn sm" data-act="sbAddGroup">${icon("plus")}Add group</button>` +
+      `<small>${client ? "Readers get a key for their groups' sections of every reading." : "The rules decide who reads each group, by its sensitivity and its name."}</small></div>` +
+      `<div class="field"><span>Fields</span>${s.fields.length ? `<table class="tbl"><thead><tr><th>Field</th><th>Group</th><th>Names the device</th></tr></thead><tbody>` +
+        s.fields.map(f => `<tr><td><code>${esc(f)}</code></td><td><select class="input" data-on-change="sbAssign" data-f="${esc(f)}">${groupOptions(s.assign[f])}</select></td>` +
+          `<td><input type="radio" name="sbKeyField" value="${esc(f)}" data-on-change="sbSet" data-k="keyField" ${f === s.keyField ? "checked" : ""}></td></tr>`).join("") +
+        `</tbody></table>` : `<div class="muted small">Paste a sample and read its fields.</div>`}</div>` +
+      `<div class="field"><span>Which document a reading goes to</span>${radio("sbKeyMode", "sbKeyMode", s.keyMode, [["pointer", "One per device, named by the chosen field"],
+        ["principal", "One per sending system"], ["fixed", "Always the same document"]])}` +
+        `<div class="row">${s.keyMode === "fixed" ? "" : `<label class="field"><span>Allowed names</span>${input("pattern", s.pattern, "[a-z0-9-]{1,48}")}</label>`}` +
+        `<label class="field"><span>${s.keyMode === "fixed" ? "Document name" : "Name prefix"}</span>${input("prefix", s.prefix, "sensor/")}</label></div></div>` +
+      `<div class="field"><span>Fields not in any group</span>${radio("sbUnlisted", "sbUnlisted", s.unlisted, [["refuse", "Refuse the reading"], ["drop", "Leave them out"]])}</div>`,
+      `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn primary" data-act="saveSource">Save draft</button>`, { wide: true });
+  }
+  acts.sbSet = (d, el) => { sb[d.k] = el.value; };
+  acts.sbMode = (d, el) => { sb.mode = el.value; sourceDrawer(); };
+  acts.sbKeyMode = (d, el) => { sb.keyMode = el.value; sourceDrawer(); };
+  acts.sbUnlisted = (d, el) => { sb.unlisted = el.value; };
+  acts.sbAssign = (d, el) => { sb.assign[d.f] = el.value; };
+  acts.sbGroup = (d, el) => {
+    const g = sb.groups[Number(d.i)], old = g.name;
+    g[d.k] = el.value;
+    if (d.k === "name") { for (const f of sb.fields) if (sb.assign[f] === old) sb.assign[f] = el.value; sourceDrawer(); }
+  };
+  acts.sbAddGroup = () => { sb.groups.push({ name: `group${sb.groups.length + 1}`, label: sb.label || "internal", recipients: "" }); sourceDrawer(); };
+  acts.sbFields = () => {
+    let v;
+    try { v = JSON.parse(sb.sample); } catch { return toast("The sample is not JSON", "bad"); }
+    if (!v || typeof v !== "object" || Array.isArray(v)) return toast("A reading is one JSON object", "bad");
+    sb.fields = Object.keys(v).map(k => "/" + k.replace(/~/g, "~0").replace(/\//g, "~1"));
+    for (const f of sb.fields) if (!(f in sb.assign)) sb.assign[f] = sb.groups[0].name;
+    if (!sb.keyField) sb.keyField = sb.fields.find(f => /sensor|device|id/.test(f)) || "";
+    sourceDrawer();
+  };
+  function sourceRecord(s) {
+    const bad = t => (toast(t, "bad"), null);
+    if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(s.id)) return bad("Name it with lowercase letters, digits and dashes");
+    if (!s.owner.trim()) return bad("Name the owner of the readings");
+    if (s.isNew && !s.project.trim()) return bad("Give the source a project");
+    const groups = s.groups.map(g => ({ name: g.name.trim(), label: g.label, fields: s.fields.filter(f => s.assign[f] === g.name),
+      ...(s.mode === "client" ? { recipients: g.recipients.split(",").map(x => x.trim()).filter(Boolean) } : {}) })).filter(g => g.fields.length);
+    if (!groups.length) return bad("Put at least one field into a group");
+    if (s.keyMode === "pointer" && !s.keyField) return bad("Choose the field that names the device");
+    const key = s.keyMode === "fixed" ? { mode: "fixed", prefix: s.prefix } : { mode: s.keyMode, pattern: s.pattern, prefix: s.prefix,
+      ...(s.keyMode === "pointer" ? { pointer: s.keyField } : {}) };
+    return { format: "fga.source/v1", id: s.id, owner: s.owner.trim(), key, groups, ...(s.unlisted === "drop" ? { unlisted: "drop" } : {}) };
+  }
+  acts.saveSource = async () => {
+    const s = sb, rec = sourceRecord(s);
+    if (!rec) return;
+    const r = s.isNew ? await api("POST", "/api/admin/sources", { bucket: { name: s.id, project: s.project.trim(), label: s.label, encryption: s.mode }, source: rec })
+      : await api("PUT", `/api/admin/sources/${enc(s.id)}`, rec);
+    if (!r.ok) return toast(fail(r.error), "bad");
+    let tried = "";
+    if (s.sample.trim()) {
+      const t = await api("POST", `/api/admin/sources/${enc(s.id)}/try`, { payload: JSON.parse(s.sample) });
+      tried = !t.ok ? ` The sample could not be tested: ${fail(t.error)}` : t.data.refused ? ` The sample would be refused: ${t.data.refused}${t.data.pointer ? ` (${t.data.pointer})` : ""}.` :
+        ` The sample goes to ${t.data.key}, in ${plural(t.data.units.length, "section")}.`;
+    }
+    closeDrawer();
+    toast(`Saved draft version ${r.data.version}. Another administrator reviews it.${tried}`, "ok");
+    C.route();
+  };
+  acts.reviewSource = d => {
+    const s = sources.find(x => x.id === d.id), v = s.draft, def = defOf(v);
+    confirmBox(`Review ${s.id}?`, `<p>Draft version ${v.version}, written by ${esc(v.author)}. New readings will be split into:</p>` +
+      `<div class="chips">${groupChips(def)}</div><p class="muted small">Readings already stored keep their groups. Sensitivities are as shown; rules decide who reads each.</p>`,
+      "Review and activate", async () => {
+        const r = await api("POST", `/api/admin/sources/${enc(s.id)}/review`, { version: v.version, digest: v.digest });
+        if (!r.ok) return toast(fail(r.error), "bad");
+        const broken = r.data.breaks_data_tools || [];
+        toast(broken.length ? `Active. These data tools no longer fit and need a new version: ${broken.join(", ")}` : "Active: new readings are split this way", broken.length ? "bad" : "ok");
+        C.route();
+      });
+  };
+  acts.stopSource = d => confirmBox(`Stop ${d.id}?`, "<p>fga accepts no more readings for it. Its readings stay, and its data tools keep answering. This cannot be undone.</p>",
+    "Stop", async () => {
+      const r = await api("POST", `/api/admin/sources/${enc(d.id)}/disable`);
+      if (!r.ok) return toast(fail(r.error), "bad");
+      toast(`${d.id} accepts no more readings`, "ok");
+      C.route();
+    });
+  acts.sendHelp = d => {
+    const s = sources.find(x => x.id === d.id), who = senders(s.id);
+    openDrawer(`How to send to ${s.id}`, `<p>A sending system is a person record with the role ${tech("source")}, its sources (${tech(`"sources": ["${s.id}"]`)}) and the ` +
+      `${tech(s.encryption === "client" ? "source-client" : "source")} rights. Its token comes from your organisation's login, never from this console.</p>` +
+      `<p>${who.length ? `Sent by ${esc(who.join(", "))}.` : "Nobody sends to it yet."}</p>` +
+      (s.encryption === "client" ? `<pre class="code">fga post-reading -source ${esc(s.id)} -in reading.json</pre><p class="muted small">The device encrypts each group for its readers; fga never sees the values.</p>`
+        : `<pre class="code">curl -X POST "$FGA_STORAGE/v1/sources/${esc(s.id)}/readings" \\\n  -H "Authorization: Bearer $DEVICE_TOKEN" \\\n  -H "Content-Type: application/json" --data @reading.json</pre>`),
+      `<button class="btn" data-act="closeDrawer">Close</button>`);
+  };
+
+  routes["/admin/data-tools"] = async () => {
+    shell("Data tools", "", `<div class="page wide">${loading("Asking fga…")}</div>`);
+    const [r] = await Promise.all([loadData(), loadPeople()]);
+    if (!r.ok) return shell("Data tools", "", `<div class="page">${pageHead("Data tools")}${loading(fail(r.error))}</div>`);
+    shell("Data tools", "", `<div class="page wide">${pageHead("Data tools",
+      "Named views of a data source's readings that AI agents call. A tool gives nobody access: each call returns only the fields the caller may read.",
+      `<button class="btn primary" data-act="editTool">${icon("plus")}New data tool</button>`)}` +
+      `<div class="card">${tools.length ? `<table class="tbl"><thead><tr><th>Tool</th><th>Over</th><th class="hide-sm">Returns</th><th>Version</th><th></th></tr></thead><tbody>` +
+        tools.map(t => { const def = defOf(t.active || t.draft);
+          return `<tr><td><div class="obj">${icon("gear")}<span><b>${esc(t.name)}</b><small class="muted"> ${esc(def ? def.description : "")}</small></span></div></td>` +
+            `<td>${esc(t.source)}</td><td class="hide-sm"><div class="chips">${(def ? def.outputs : []).map(o => `<span class="chip" title="${esc(o.group + " " + o.field)}">${esc(o.name)}</span>`).join("")}</div></td>` +
+            `<td class="muted nowrap">${t.disabled ? "Turned off" : esc(versionText(t))}</td><td class="actions">` + (t.disabled ? "" :
+              (t.draft ? `<button class="btn sm primary" data-act="publishTool" data-id="${esc(t.name)}">Publish</button>` : "") +
+              `<button class="btn sm" data-act="editTool" data-id="${esc(t.name)}">Change</button>` +
+              `<button class="btn sm danger" data-act="offTool" data-id="${esc(t.name)}">Turn off</button>`) + `</td></tr>`; }).join("") +
+        `</tbody></table>` : `<div class="empty">${icon("gear")}<div>No data tools yet.</div></div>`}</div></div>`);
+  };
+  const activeSources = () => sources.filter(s => !s.disabled && s.active);
+  acts.editTool = d => {
+    const t = tools.find(x => x.name === d.id), def = t && defOf(t.draft || t.active);
+    const src = (def && def.source) || (activeSources()[0] || {}).id;
+    if (!src) return toast("A data tool needs a data source with an active version first", "bad");
+    tb = def ? { isNew: false, ...def, keys: Object.entries((def.select && def.select.keys) || {}).map(([v, k]) => `${v} = ${k}`).join("\n"),
+      mode: def.select.fixed ? "fixed" : def.select.keys ? "enum" : "string", arg: def.select.argument || "sensor", fixed: def.select.fixed || "",
+      max: def.history ? def.history.max_readings || "" : "", preview: "", answer: "" } :
+      { isNew: true, name: "", description: "", source: src, operation: "latest", outputs: [], on_unreadable: "skip_fields", mode: "string", arg: "sensor",
+        keys: "", fixed: "", max: "", preview: "", answer: "" };
+    toolDrawer();
+  };
+  function toolDrawer() {
+    const t = tb, src = sources.find(s => s.id === t.source), sdef = defOf(src && src.active);
+    const out = (g, f) => t.outputs.find(o => o.group === g && o.field === f);
+    const input = (k, v, ph = "") => `<input class="input" value="${esc(v)}" placeholder="${esc(ph)}" data-on-change="tbSet" data-k="${k}" autocomplete="off">`;
+    openDrawer(t.isNew ? "New data tool" : `Change ${t.name}`,
+      (t.isNew ? `<label class="field"><span>Over</span><select class="input" data-on-change="tbSource">${activeSources().map(s =>
+        `<option ${s.id === t.source ? "selected" : ""}>${esc(s.id)}</option>`).join("")}</select></label>` +
+        `<label class="field"><span>Name</span>${input("name", t.name, "read_climate")}<small>What agents call it: lowercase letters, digits and underscores.</small></label>` : "") +
+      `<label class="field"><span>What it gives</span>${input("description", t.description, "Latest air temperature of one greenhouse.")}</label>` +
+      `<div class="field"><span>Readings</span>${radio("tbOp", "tbOp", t.operation, [["latest", "The latest reading"], ["history", "Past readings, newest first"]])}` +
+        (t.operation === "history" ? `<label class="field"><span>At most per call</span>${input("max", t.max, "50")}</label>` : "") + `</div>` +
+      `<div class="field"><span>Which device</span>${radio("tbMode", "tbMode", t.mode, [["string", "The caller names it"], ["enum", "The caller picks from a list"], ["fixed", "Always the same"]])}` +
+        (t.mode === "fixed" ? `<label class="field"><span>Document</span>${input("fixed", t.fixed, "sensor/gh-north-1")}</label>` :
+          `<label class="field"><span>Argument</span>${input("arg", t.arg, "sensor")}</label>` +
+          (t.mode === "enum" ? `<label class="field"><span>Choices</span><textarea class="input mono" rows="3" data-on-change="tbSet" data-k="keys" placeholder="north = sensor/gh-north-1">${esc(t.keys)}</textarea></label>` : "")) + `</div>` +
+      `<div class="field"><span>Fields it returns</span>${sdef ? `<table class="tbl"><thead><tr><th></th><th>Field</th><th>Returned as</th><th>Kind</th></tr></thead><tbody>` +
+        sdef.groups.flatMap(g => g.fields.map(f => { const o = out(g.name, f);
+          return `<tr><td><input type="checkbox" data-on-change="tbOut" data-g="${esc(g.name)}" data-f="${esc(f)}" ${o ? "checked" : ""}></td>` +
+            `<td><code>${esc(f)}</code> <small class="muted">${esc(g.name)} · ${esc(W.label(g.label).name)}</small></td>` +
+            `<td>${o ? `<input class="input" value="${esc(o.name)}" data-on-change="tbOutName" data-g="${esc(g.name)}" data-f="${esc(f)}">` : ""}</td>` +
+            `<td>${o ? `<select class="input" data-on-change="tbOutType" data-g="${esc(g.name)}" data-f="${esc(f)}">${["any", "number", "string", "boolean", "object", "array"].map(x =>
+              `<option ${x === (o.type || "any") ? "selected" : ""}>${x}</option>`).join("")}</select>` : ""}</td></tr>`; })).join("") + `</tbody></table>` :
+        `<div class="muted small">The source has no active version.</div>`}</div>` +
+      `<div class="field"><span>When the caller may not read a group</span>${radio("tbUnreadable", "tbUnreadable", t.on_unreadable || "skip_reading",
+        [["skip_fields", "Leave out that group's fields"], ["skip_reading", "Leave out the whole reading"]])}</div>` +
+      `<div class="field"><span>Preview as yourself</span>${input("preview", t.preview, t.mode === "fixed" ? "{}" : `{"${t.arg}": "gh-1"}`)}` +
+        `<button class="btn sm" data-act="previewTool">${icon("eye")}Preview</button>${t.answer ? `<pre class="code">${esc(t.answer)}</pre>` : ""}` +
+        `<small>Runs the tool with your own access, as a call would${src && src.encryption === "client" ? "; end-to-end encrypted readings cannot be previewed here" : ""}.</small></div>`,
+      `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn primary" data-act="saveTool">Save draft</button>`, { wide: true });
+  }
+  acts.tbSet = (d, el) => { tb[d.k] = el.value; };
+  acts.tbSource = (d, el) => { tb.source = el.value; tb.outputs = []; toolDrawer(); };
+  acts.tbOp = (d, el) => { tb.operation = el.value; toolDrawer(); };
+  acts.tbMode = (d, el) => { tb.mode = el.value; toolDrawer(); };
+  acts.tbUnreadable = (d, el) => { tb.on_unreadable = el.value; };
+  acts.tbOut = (d, el) => {
+    tb.outputs = tb.outputs.filter(o => !(o.group === d.g && o.field === d.f));
+    if (el.checked) tb.outputs.push({ name: d.f.slice(1).replace(/[^a-z0-9_]/gi, "_").toLowerCase(), group: d.g, field: d.f, type: "any" });
+    toolDrawer();
+  };
+  const outOf = d => tb.outputs.find(o => o.group === d.g && o.field === d.f);
+  acts.tbOutName = (d, el) => { outOf(d).name = el.value; };
+  acts.tbOutType = (d, el) => { outOf(d).type = el.value; };
+  function toolRecord(t) {
+    const bad = m => (toast(m, "bad"), null);
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(t.name)) return bad("Name it with lowercase letters, digits and underscores, starting with a letter");
+    if (!t.description.trim()) return bad("Say what it gives");
+    if (!t.outputs.length) return bad("Choose at least one field");
+    const arg = t.arg.trim(), select = t.mode === "fixed" ? { fixed: t.fixed.trim() } : { argument: arg };
+    const args = [];
+    if (t.mode === "enum") {
+      select.keys = Object.fromEntries(t.keys.split("\n").map(l => l.split("=").map(x => x.trim())).filter(([v, k]) => v && k));
+      args.push({ name: arg, type: "enum", values: Object.keys(select.keys) });
+    } else if (t.mode === "string") args.push({ name: arg, type: "string" });
+    return { format: "fga.data-tool/v1", name: t.name, description: t.description.trim(), source: t.source, operation: t.operation,
+      ...(args.length ? { arguments: args } : {}), select, outputs: t.outputs.map(o => ({ name: o.name, group: o.group, field: o.field, ...(o.type && o.type !== "any" ? { type: o.type } : {}) })),
+      on_unreadable: t.on_unreadable || "skip_reading", ...(t.operation === "history" && Number(t.max) ? { history: { max_readings: Number(t.max) } } : {}) };
+  }
+  acts.previewTool = async () => {
+    const rec = toolRecord(tb);
+    if (!rec) return;
+    let args;
+    try { args = JSON.parse(tb.preview || "{}"); } catch { return toast("The arguments are not JSON", "bad"); }
+    const r = await api("POST", "/api/data-tools/preview", { definition: rec, arguments: args });
+    tb.answer = r.ok ? JSON.stringify(r.data, null, 2) : `${fail(r.error)}${r.status === 404 ? ": nothing you may read" : ""}`;
+    toolDrawer();
+  };
+  acts.saveTool = async () => {
+    const rec = toolRecord(tb);
+    if (!rec) return;
+    const r = tb.isNew ? await api("POST", "/api/admin/data-tools", rec) : await api("PUT", `/api/admin/data-tools/${enc(rec.name)}`, rec);
+    if (!r.ok) return toast(fail(r.error), "bad");
+    closeDrawer();
+    toast(`Saved draft version ${r.data.version}. Publish it to let agents use it.`, "ok");
+    C.route();
+  };
+  acts.publishTool = d => {
+    const t = tools.find(x => x.name === d.id), v = t.draft;
+    confirmBox(`Publish ${t.name}?`, `<p>Draft version ${v.version}, written by ${esc(v.author)}. Agents and people the rules allow then see it as an MCP tool; ` +
+      `each call returns only what the caller may read.</p>`, "Publish", async () => {
+      const r = await api("POST", `/api/admin/data-tools/${enc(t.name)}/review`, { version: v.version, digest: v.digest });
+      if (!r.ok) return toast(fail(r.error), "bad");
+      toast(`${t.name} is published`, "ok");
+      C.route();
+    });
+  };
+  acts.offTool = d => confirmBox(`Turn off ${d.id}?`, "<p>Agents no longer see or call it. This cannot be undone; a new tool needs a new name.</p>", "Turn off", async () => {
+    const r = await api("POST", `/api/admin/data-tools/${enc(d.id)}/disable`);
+    if (!r.ok) return toast(fail(r.error), "bad");
+    toast(`${d.id} is turned off`, "ok");
+    C.route();
+  });
+
   // ---------------------------------------------------------------- spaces
 
   routes["/admin/spaces"] = async () => {

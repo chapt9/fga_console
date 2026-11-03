@@ -157,6 +157,7 @@
       `<span>fga console<small>${esc(session.organisation)}</small></span></div><nav class="nav">` +
       (session.admin ? `<div class="nav-section">Administration</div>${nav("/admin", "home", "Overview")}${nav("/admin/people", "users", "People")}` +
         `${nav("/admin/rights", "key", "Rights")}${nav("/admin/agents", "bot", "AI agents")}${nav("/admin/spaces", "bucket", "Spaces")}` +
+        `${nav("/admin/sources", "upload", "Data sources")}${nav("/admin/data-tools", "gear", "Data tools")}` +
         `${nav("/admin/rules", "policy", "Rules")}${nav("/admin/audit", "audit", "Audit log")}${nav("/admin/servers", "server", "Servers")}` : "") +
       (can("open") || can("approve") ? `<div class="nav-section">Workspace</div>` : "") +
       (can("open") ? nav("/files", "files", "Files") : "") + (can("approve") ? nav("/approvals", "inbox", "Approvals") : "") + `</nav>` +

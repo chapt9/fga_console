@@ -637,3 +637,8 @@ ul.tight { margin: 4px 0 10px; padding-left: 18px; } ul.tight li { margin-bottom
 .empty.small { padding: 20px; font-size: 13px; }
 .tbl th.num, .tbl td.num { width: 1%; white-space: nowrap; }
 .spaced-sm { margin-top: 8px; }
+
+/* data sources and data tools */
+pre.code { font-family: var(--mono); font-size: 12.5px; line-height: 1.5; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; margin: 8px 0; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; }
+.row > .field { flex: 1 1 180px; }
