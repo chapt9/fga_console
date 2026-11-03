@@ -500,8 +500,8 @@
     return sr.ok ? tr : sr;
   }
   const defOf = v => (v && v.definition) || null;
-  const versionText = x => [x.active ? `version ${x.active.version}` : "not active yet", x.draft ? `draft ${x.draft.version} to review` : ""]
-    .filter(Boolean).join(" · ");
+  const versionText = (x, step) => [x.active ? `version ${x.active.version}` : "", x.draft ? `draft ${x.draft.version} to ${step}` : ""]
+    .filter(Boolean).join(", ") || "none";
   const senders = id => people.filter(p => !p.disabled && p.roles.includes("source") &&
     (Array.isArray(p.attributes.sources) ? p.attributes.sources : []).includes(id)).map(p => p.id);
   const groupChips = def => (def ? def.groups : []).map(g => `<span class="chip" title="${esc(g.fields.join(", "))}">${esc(g.name)} · ` +
@@ -523,12 +523,11 @@
         sources.map(s => `<tr><td><div class="obj">${icon(s.encryption === "client" ? "lock" : "upload")}<span><b>${esc(s.id)}</b>` +
           `<small class="muted"> ${esc(s.project)} · ${esc(W.encryption(s.encryption).name)}</small></span></div></td>` +
           `<td><div class="chips">${groupChips(defOf(s.active || s.draft))}</div></td>` +
-          `<td class="hide-sm">${esc(senders(s.id).join(", ") || "nobody yet")}</td>` +
-          `<td class="muted nowrap">${s.disabled ? "Stopped" : esc(versionText(s))}</td><td class="actions">` + (s.disabled ? "" :
+          `<td class="hide-sm">${esc(senders(s.id).join(", ") || "nobody yet")}<br><a href="#/admin/sources" class="small" data-act="sendHelp" ` +
+            `data-id="${esc(s.id)}">How to send</a></td>` +
+          `<td class="muted">${s.disabled ? "Stopped" : esc(versionText(s, "review"))}</td><td class="actions">` + (s.disabled ? "" :
             (reviewable(s) ? `<button class="btn sm primary" data-act="reviewSource" data-id="${esc(s.id)}">Review</button>` : "") +
-            `<button class="btn sm" data-act="sendHelp" data-id="${esc(s.id)}">How to send</button>` +
-            `<button class="btn sm" data-act="editSource" data-id="${esc(s.id)}">Change</button>` +
-            `<button class="btn sm danger" data-act="stopSource" data-id="${esc(s.id)}">Stop</button>`) + `</td></tr>`).join("") +
+            `<button class="btn sm" data-act="editSource" data-id="${esc(s.id)}">Change</button>`) + `</td></tr>`).join("") +
         `</tbody></table>` : `<div class="empty">${icon("upload")}<div>No data sources yet.</div></div>`}</div></div>`);
   };
 
@@ -573,6 +572,7 @@
         `<div class="row">${s.keyMode === "fixed" ? "" : `<label class="field"><span>Allowed names</span>${input("pattern", s.pattern, "[a-z0-9-]{1,48}")}</label>`}` +
         `<label class="field"><span>${s.keyMode === "fixed" ? "Document name" : "Name prefix"}</span>${input("prefix", s.prefix, "sensor/")}</label></div></div>` +
       `<div class="field"><span>Fields not in any group</span>${radio("sbUnlisted", "sbUnlisted", s.unlisted, [["refuse", "Refuse the reading"], ["drop", "Leave them out"]])}</div>`,
+      (s.isNew ? "" : `<button class="btn danger" data-act="stopSource" data-id="${esc(s.id)}">Stop readings</button><span class="spacer"></span>`) +
       `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn primary" data-act="saveSource">Save draft</button>`, { wide: true });
   }
   acts.sbSet = (d, el) => { sb[d.k] = el.value; };
@@ -634,7 +634,7 @@
         const broken = r.data.breaks_data_tools || [];
         toast(broken.length ? `Active. These data tools no longer fit and need a new version: ${broken.join(", ")}` : "Active: new readings are split this way", broken.length ? "bad" : "ok");
         C.route();
-      });
+      }, "primary");
   };
   acts.stopSource = d => confirmBox(`Stop ${d.id}?`, "<p>fga accepts no more readings for it. Its readings stay, and its data tools keep answering. This cannot be undone.</p>",
     "Stop", async () => {
@@ -664,7 +664,7 @@
         tools.map(t => { const def = defOf(t.active || t.draft);
           return `<tr><td><div class="obj">${icon("gear")}<span><b>${esc(t.name)}</b><small class="muted"> ${esc(def ? def.description : "")}</small></span></div></td>` +
             `<td>${esc(t.source)}</td><td class="hide-sm"><div class="chips">${(def ? def.outputs : []).map(o => `<span class="chip" title="${esc(o.group + " " + o.field)}">${esc(o.name)}</span>`).join("")}</div></td>` +
-            `<td class="muted nowrap">${t.disabled ? "Turned off" : esc(versionText(t))}</td><td class="actions">` + (t.disabled ? "" :
+            `<td class="muted">${t.disabled ? "Turned off" : esc(versionText(t, "publish"))}</td><td class="actions">` + (t.disabled ? "" :
               (t.draft ? `<button class="btn sm primary" data-act="publishTool" data-id="${esc(t.name)}">Publish</button>` : "") +
               `<button class="btn sm" data-act="editTool" data-id="${esc(t.name)}">Change</button>` +
               `<button class="btn sm danger" data-act="offTool" data-id="${esc(t.name)}">Turn off</button>`) + `</td></tr>`; }).join("") +
@@ -766,7 +766,7 @@
       if (!r.ok) return toast(fail(r.error), "bad");
       toast(`${t.name} is published`, "ok");
       C.route();
-    });
+    }, "primary");
   };
   acts.offTool = d => confirmBox(`Turn off ${d.id}?`, "<p>Agents no longer see or call it. This cannot be undone; a new tool needs a new name.</p>", "Turn off", async () => {
     const r = await api("POST", `/api/admin/data-tools/${enc(d.id)}/disable`);

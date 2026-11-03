@@ -185,9 +185,9 @@
   function closeDrawer() { const d = document.getElementById("drawer"); if (d) d.remove(); }
   acts.closeDrawer = closeDrawer;
   let onConfirm = null;
-  function confirmBox(title, html, label, fn) {
+  function confirmBox(title, html, label, fn, cls = "danger-solid") {
     onConfirm = fn;
-    openDrawer(title, html, `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn danger-solid" data-act="confirmYes">${esc(label)}</button>`);
+    openDrawer(title, html, `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn ${cls}" data-act="confirmYes">${esc(label)}</button>`);
   }
   acts.confirmYes = () => { const fn = onConfirm; onConfirm = null; closeDrawer(); if (fn) fn(); };
 
