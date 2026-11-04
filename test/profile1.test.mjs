@@ -86,6 +86,8 @@ test("exact bytes", async () => {
   const back = p.decodeKeyPackage(b(kp.bytes));
   assert.equal(p.base64(back.binding), kp.binding);
   assert.equal(p.base64(back.keyset), kp.keyset);
+  // The key commitment, pinned with fga's Go SDK (TestKeyCommitmentVector).
+  assert.equal(await p.keyCommitment(b(kp.bytes)), "sha256:241f14d54445f6c810d434dea6156c848cb99be0ff479f22537f4cd42ed7f645");
 });
 
 function readVarint(bytes, at) {
@@ -147,6 +149,34 @@ test("the browser's own encryption opens, and reshares to a pinned recipient", a
   }
   await assert.rejects(p.encrypt(pattern(1), params, [{ fingerprint: "sha256:" + "0".repeat(64), keyVersion: 1 }], signer, trust, 1),
     e => e.kind === "untrusted", "an unpinned recipient");
+});
+
+// fga's security review of 4 November 2026, finding 5: the descriptor
+// commits to the key package, so an envelope that holds another key is
+// refused before anything is decrypted; one from before the commitment
+// still opens.
+test("the descriptor commits to the key", async () => {
+  const { recipient, signer, trust } = await keys();
+  const params = { tenant: "b00eda52-152b-4985-a2d3-40178b9bcccd", object: "0e6b2c1a-7d1f-4c3b-9a55-1f2e3d4c5b6a",
+    logicalVersion: "1f7c3d2b-8e20-4d4c-8b66-2a3f4e5d6c7b", cryptoVersion: "2a8d4e3c-9f31-4e5d-9c77-3b4a5f6e7d8c",
+    blob: "3b9e5f4d-a042-4f6e-8d88-4c5b6a7f8e9d", attempt: "4cae6a5e-b153-4a7f-9e99-5d6c7b8a9fae" };
+  const to = [{ fingerprint: recipient.fingerprintText, keyVersion: 1 }];
+  const one = await p.encrypt(pattern(64), params, to, signer, trust, 1_800_000_000_000);
+  const d = p.parseDescriptor(one.descriptor);
+  assert.match(d.key_commitment, /^sha256:[0-9a-f]{64}$/);
+  // The same envelope context, signed, around another key package for the
+  // same object: only the commitment tells them apart.
+  const context = one.envelopes[0].context;
+  const aad = p.payloadAAD(p.parseUUID(params.tenant), p.parseUUID(params.object), p.parseUUID(params.cryptoVersion));
+  const other = p.encodeKeyPackage(aad, p.encodeKeyset(crypto.getRandomValues(new Uint8Array(32)), 7));
+  const ciphertext = await p.hpkeSeal(recipient.publicRaw, await p.hpkeInfo(context), other);
+  const swapped = { context, ciphertext, signature: await p.signJWS(p.TYPE_ENVELOPE, signer, await p.envelopeSigningInput(context, ciphertext)) };
+  await assert.rejects(p.decrypt(one.ciphertext, { descriptor: one.descriptor, descriptorSignature: one.descriptorSignature, envelope: swapped },
+    recipient, trust), e => e.kind === "binding" && /commits/.test(e.message), "an envelope with another key");
+  const legacy = p.marshalDescriptor({ ...d, key_commitment: undefined, createdAtUnixMs: Date.parse(d.created_at) });
+  assert.ok(!new TextDecoder().decode(legacy).includes("key_commitment"));
+  const pkg = { descriptor: legacy, descriptorSignature: await p.signJWS(p.TYPE_DESCRIPTOR, signer, legacy), envelope: one.envelopes[0] };
+  assert.deepEqual(await p.decrypt(one.ciphertext, pkg, recipient, trust), pattern(64), "a descriptor from before the commitment");
 });
 
 test("strict parsing", async () => {

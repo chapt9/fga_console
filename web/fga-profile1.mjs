@@ -439,6 +439,17 @@ export async function payloadDecrypt(keyValue, aad, ciphertext) {
 
 const DESCRIPTOR_FIELDS = ["version", "tenant_id", "object_id", "logical_version_id", "crypto_version_id", "blob_id",
   "attempt_id", "suite", "format", "ciphertext_sha256", "ciphertext_length", "signer", "created_at"];
+// key_commitment follows them when present: descriptors from before it
+// carry none (fga's security review of 4 November 2026, finding 5).
+const DESCRIPTOR_OPTIONAL = ["key_commitment"];
+
+// keyCommitment is fga's cryptowire.KeyCommitment: SHA-256 over
+// "fga.key-commitment/v1", a zero byte and the key package. A signed
+// descriptor commits to the key package every envelope wraps, so one
+// version decrypts to one plaintext for every recipient.
+export async function keyCommitment(keyPackage) {
+  return digestText(await sha256(utf8("fga.key-commitment/v1"), Uint8Array.of(0), keyPackage));
+}
 
 // rfc3339Seconds writes a time as Go writes a UTC time truncated to the
 // second.
@@ -447,14 +458,16 @@ const rfc3339Seconds = ms => new Date(Math.floor(ms / 1000) * 1000).toISOString(
 // marshalDescriptor writes the descriptor JSON exactly as fga's Marshal.
 export function marshalDescriptor(d) {
   const v = { ...d, version: "fga.descriptor/v1", created_at: rfc3339Seconds(d.createdAtUnixMs) };
-  const b = utf8("{" + DESCRIPTOR_FIELDS.map(k => JSON.stringify(k) + ":" + JSON.stringify(v[k])).join(",") + "}");
+  const keys = [...DESCRIPTOR_FIELDS, ...DESCRIPTOR_OPTIONAL.filter(k => v[k])];
+  const b = utf8("{" + keys.map(k => JSON.stringify(k) + ":" + JSON.stringify(v[k])).join(",") + "}");
   parseDescriptor(b);
   return b;
 }
 
 // strictObject parses a flat JSON object of strings and whole numbers,
-// refusing repeated, unknown and missing fields and trailing data.
-function strictObject(text, fields) {
+// refusing repeated, unknown and missing fields and trailing data; the
+// optional fields may be missing.
+function strictObject(text, fields, optional = []) {
   const re = /\s*("(?:[^"\\\u0000-\u001f]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}:,])/y;
   const tokens = [];
   let m, at = 0;
@@ -470,7 +483,7 @@ function strictObject(text, fields) {
     if (!first) { if (t === "}") break; if (t !== ",") fail("format", "descriptor JSON"); t = next(); }
     if (!t || t[0] !== '"' || next() !== ":") fail("format", "descriptor JSON");
     const key = JSON.parse(t), value = next();
-    if (!fields.includes(key) || key in out || value === undefined || "{}:,".includes(value) || /^-?\d.*[.eE]/.test(value)) {
+    if (!(fields.includes(key) || optional.includes(key)) || key in out || value === undefined || "{}:,".includes(value) || /^-?\d.*[.eE]/.test(value)) {
       fail("format", `descriptor field ${key}`);
     }
     out[key] = JSON.parse(value);
@@ -483,7 +496,8 @@ export function parseDescriptor(b) {
   if (b.length > MAX_DESCRIPTOR) fail("format", "descriptor size");
   let text;
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(b); } catch { fail("format", "descriptor encoding"); }
-  const d = strictObject(text, DESCRIPTOR_FIELDS);
+  const d = strictObject(text, DESCRIPTOR_FIELDS, DESCRIPTOR_OPTIONAL);
+  if ("key_commitment" in d) parseDigest(d.key_commitment);
   for (const k of ["tenant_id", "object_id", "logical_version_id", "crypto_version_id", "blob_id", "attempt_id"]) parseUUID(d[k]);
   parseDigest(d.ciphertext_sha256);
   parseDigest(d.signer);
@@ -555,7 +569,8 @@ export async function encrypt(plaintext, params, recipients, signer, trust, nowM
   }
   const descriptor = marshalDescriptor({ tenant_id: params.tenant, object_id: params.object, logical_version_id: params.logicalVersion,
     crypto_version_id: params.cryptoVersion, blob_id: params.blob, attempt_id: params.attempt, suite: SUITE, format: FORMAT,
-    ciphertext_sha256: digestText(sum), ciphertext_length: ciphertext.length, signer: signer.fingerprintText, createdAtUnixMs: nowMs });
+    ciphertext_sha256: digestText(sum), ciphertext_length: ciphertext.length, signer: signer.fingerprintText, createdAtUnixMs: nowMs,
+    key_commitment: await keyCommitment(keyPackage) });
   return { ciphertext, descriptor, descriptorSignature: await signJWS(TYPE_DESCRIPTOR, signer, descriptor), envelopes,
     ciphertextSHA256: digestText(sum), ciphertextLength: ciphertext.length };
 }
@@ -581,7 +596,10 @@ async function checked(pkg, key, trust, ciphertext) {
   const keyPackage = await hpkeOpen(key, await hpkeInfo(env.context), env.ciphertext);
   const { binding, keyset } = decodeKeyPackage(keyPackage);
   if (!equal(binding, payloadAAD(ctx.tenant, ctx.object, ctx.cryptoVersion))) fail("binding", "key package bound to another object");
-  return { ctx, keyPackage, keyValue: decodeKeyset(keyset), aad: binding };
+  const keyValue = decodeKeyset(keyset);
+  // In fga's order: the key package first, then its commitment.
+  if (desc.key_commitment && await keyCommitment(keyPackage) !== desc.key_commitment) fail("binding", "the envelope holds another key than the descriptor commits to");
+  return { ctx, keyPackage, keyValue, aad: binding };
 }
 
 // decrypt is fga's Decrypt: nothing is returned unless the descriptor,
