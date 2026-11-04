@@ -124,8 +124,8 @@ window.FGA_WORDS = (() => {
     "document.text_unit": ["read"], "text.entry": ["read"], "document.derived": ["deliver"],
   };
   const CONDITIONS = [
-    { id: "project", text: "it belongs to one of their projects", expr: "resource.attributes.project in principal.attributes.projects", types: PROJECT_TYPES,
-      textFor: { "directory.project": "they are a member of it" } },
+    { id: "project", text: "it belongs to one of their projects", expr: "resource.attributes.project in principal.attributes.projects", types: [...PROJECT_TYPES, "agent.tool"],
+      textFor: { "directory.project": "they are a member of it", "agent.tool": "its data source belongs to one of their projects" } },
     { id: "leads", text: "they lead its project", expr: "resource.attributes.project in principal.attributes.leads",
       types: [...PROJECT_TYPES, "directory.project"], textFor: { "directory.project": "they lead it" } },
     { id: "leads-any", text: "they lead a project", expr: "has(principal.attributes.leads) && principal.attributes.leads != []", types: ["agent.tool"] },
@@ -141,7 +141,10 @@ window.FGA_WORDS = (() => {
     { id: "approved", text: "the address is approved", expr: "resource.attributes.approved == true", types: ["network.destination"] },
     { id: "tool", text: "it is a registered tool", expr: 'resource.attributes.kind == "executor"', types: ["agent.tool"] },
     { id: "mcp", text: "it is an AI assistant tool", expr: 'resource.attributes.kind == "mcp"', types: ["agent.tool"] },
+    { id: "data", text: "it is a data tool", expr: 'resource.attributes.kind == "data"', types: ["agent.tool"] },
   ];
+  // A data tool's source is a condition with a value: "source:<id>".
+  const sourceCondition = id => ({ id: `source:${id}`, text: `it serves the data source ${id}`, expr: `resource.attributes.source == "${id}"`, types: ["agent.tool"] });
   const PATTERNS = [
     [/^resource\.attributes\.project in principal\.attributes\.projects$/, "project"],
     [/^resource\.attributes\.project in principal\.attributes\.leads$/, "leads"],
@@ -156,6 +159,8 @@ window.FGA_WORDS = (() => {
     [/^resource\.attributes\.approved == true$/, "approved"],
     [/^resource\.attributes\.kind == "executor"$/, "tool"],
     [/^resource\.attributes\.kind == "mcp"$/, "mcp"],
+    [/^resource\.attributes\.kind == "data"$/, "data"],
+    [/^resource\.attributes\.source == "([a-z0-9][a-z0-9-]{0,39})"$/, m => `source:${m[1]}`],
   ];
 
   // Names given in the console (new roles, permission sets) take
@@ -221,7 +226,7 @@ window.FGA_WORDS = (() => {
       for (let j = parts.length; j > i && !hit; j--) {
         const cand = parts.slice(i, j).join(" && ");
         const p = PATTERNS.find(([re]) => re.test(cand));
-        if (p) hit = { id: p[1], next: j, cand };
+        if (p) hit = { id: typeof p[1] === "function" ? p[1](p[0].exec(cand)) : p[1], next: j, cand };
       }
       if (hit) {
         ids.push(hit.id);
@@ -232,7 +237,7 @@ window.FGA_WORDS = (() => {
     return { ids, custom: rest.join(" && "), grantAction };
   }
 
-  const condition = id => CONDITIONS.find(c => c.id === id);
+  const condition = id => (id.startsWith("source:") ? sourceCondition(id.slice(7)) : CONDITIONS.find(c => c.id === id));
   const conditionsFor = t => CONDITIONS.filter(c => c.types.includes(t));
   const condText = (c, t) => (c.textFor && c.textFor[t]) || c.text;
 

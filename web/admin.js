@@ -705,7 +705,7 @@
       `<button class="btn primary" data-act="editTool">${icon("plus")}New data tool</button>`)}` +
       `<div class="card">${tools.length ? `<table class="tbl"><thead><tr><th>Tool</th><th>Over</th><th class="hide-sm">Returns</th><th>Version</th><th></th></tr></thead><tbody>` +
         tools.map(t => { const def = defOf(t.active || t.draft);
-          return `<tr><td><div class="obj">${icon("gear")}<span><b>${esc(t.name)}</b><small class="muted"> ${esc(def ? def.description : "")}</small></span></div></td>` +
+          return `<tr><td><div class="obj">${icon("gear")}<span><b>${esc(t.name)}</b>${def && def.title ? ` ${esc(def.title)}` : ""}<small class="muted"> ${esc(def ? def.description : "")}</small></span></div></td>` +
             `<td>${esc(t.source)}</td><td class="hide-sm"><div class="chips">${(def ? def.outputs : []).map(o => `<span class="chip" title="${esc(o.group + " " + o.field)}">${esc(o.name)}</span>`).join("")}</div></td>` +
             `<td class="muted">${t.disabled ? "Turned off" : esc(versionText(t, "publish"))}</td><td class="actions">` + (t.disabled ? "" :
               (t.draft ? `<button class="btn sm primary" data-act="publishTool" data-id="${esc(t.name)}">Publish</button>` : "") +
@@ -714,72 +714,180 @@
         `</tbody></table>` : `<div class="empty">${icon("gear")}<div>No data tools yet.</div></div>`}</div></div>`);
   };
   const activeSources = () => sources.filter(s => !s.disabled && s.active);
-  acts.editTool = d => {
+  // A data tool is published on MCP under its name, which agents call, and
+  // its title, which people see in their AI client. The data source is its
+  // kind of data; suggestions follow the source and the operation until the
+  // administrator writes their own.
+  const mcpName = s => {
+    const n = String(s).toLowerCase().replace(/~1/g, "_").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    return (/^[a-z]/.test(n) ? n : `f_${n}`).slice(0, 64);
+  };
+  const suggestName = t => mcpName(`${t.source}_${t.operation}`);
+  const suggestTitle = t => `${W.human(t.source)}: ${t.operation === "history" ? "past readings" : "latest reading"}`;
+  const outKey = (g, f) => `${g} ${f}`;
+  acts.editTool = async d => {
     const t = tools.find(x => x.name === d.id), def = t && defOf(t.draft || t.active);
     const src = (def && def.source) || (activeSources()[0] || {}).id;
     if (!src) return toast("A data tool needs a data source with an active version first", "bad");
-    tb = def ? { isNew: false, ...def, keys: Object.entries((def.select && def.select.keys) || {}).map(([v, k]) => `${v} = ${k}`).join("\n"),
+    tb = def ? { isNew: false, ...def, title: def.title || "", names: {}, keys: Object.entries((def.select && def.select.keys) || {}).map(([v, k]) => `${v} = ${k}`).join("\n"),
       mode: def.select.fixed ? "fixed" : def.select.keys ? "enum" : "string", arg: def.select.argument || "sensor", fixed: def.select.fixed || "",
-      max: def.history ? def.history.max_readings || "" : "", preview: "", answer: "" } :
-      { isNew: true, name: "", description: "", source: src, operation: "latest", outputs: [], on_unreadable: "skip_fields", mode: "string", arg: "sensor",
-        keys: "", fixed: "", max: "", preview: "", answer: "" };
+      max: def.history ? def.history.max_readings || "" : "", preview: "", answer: "", titleSet: true, role: "" } :
+      { isNew: true, name: "", title: "", description: "", source: src, operation: "latest", outputs: [], names: {}, on_unreadable: "skip_fields", mode: "string", arg: "sensor",
+        keys: "", fixed: "", max: "", preview: "", answer: "", nameSet: false, titleSet: false, role: "" };
+    if (tb.isNew) Object.assign(tb, { name: suggestName(tb), title: suggestTitle(tb) });
+    await loadAccess();
     toolDrawer();
+  };
+  // loadAccess reads the rules in force and the rules draft, for "who may
+  // use it".
+  async function loadAccess() {
+    const [pr, dr] = await Promise.all([api("GET", "/api/admin/rules"), api("GET", "/api/admin/rules/draft")]);
+    if (pr.ok) policy = pr.data;
+    draft = policy && dr.ok && dr.data.draft && dr.data.draft.base_digest === policy.digest ? dr.data.draft : null;
+  }
+  // toolAccess reads what the tool rules give person p for a tool with
+  // attributes attrs: "yes", "no", or "maybe" where a rule holds a part the
+  // console cannot read. It also needs the person's own rights. fga decides
+  // every call itself; this is what the rules and records say today.
+  function toolAccess(p, attrs) {
+    if (p.disabled || !(p.capabilities["agent.tool"] || []).includes("invoke")) return "no";
+    const projects = Array.isArray(p.attributes.projects) ? p.attributes.projects : [];
+    const fits = r => {
+      if (!r.actions.includes("invoke") || !(r.roles.includes("*") || r.roles.some(x => p.roles.includes(x)))) return "no";
+      const m = W.matchCondition(r.when || "");
+      let out = m.custom ? "maybe" : "yes";
+      for (const id of m.ids) {
+        const v = id === "data" ? attrs.kind === "data" : id === "mcp" ? attrs.kind === "mcp" : id === "tool" ? attrs.kind === "executor"
+          : id === "project" ? projects.includes(attrs.project) : id === "leads-any" ? Array.isArray(p.attributes.leads) && p.attributes.leads.length > 0
+          : id.startsWith("source:") ? attrs.source === id.slice(7) : null;
+        if (v === false) return "no";
+        if (v === null) out = "maybe";
+      }
+      return out;
+    };
+    const rules = allRules().filter(r => r.type === "agent.tool");
+    const denied = rules.filter(r => r.effect === "deny" || r.set === "ceiling").map(fits);
+    const allowed = rules.filter(r => r.effect !== "deny" && r.set !== "ceiling").map(fits);
+    if (denied.includes("yes")) return "no";
+    if (allowed.includes("yes")) return denied.includes("maybe") ? "maybe" : "yes";
+    return allowed.includes("maybe") ? "maybe" : "no";
+  }
+  // whoMayUse is the "who may use it" part of the tool form: listing the
+  // tools goes through the AI assistant tool data.list, so a person needs
+  // both.
+  function whoMayUse(t, src) {
+    if (!policy) return `<div class="muted small">The rules could not be read.</div>`;
+    const attrs = { kind: "data", source: t.source, project: src && src.project };
+    const verdict = p => [toolAccess(p, attrs), toolAccess(p, { kind: "mcp" })].reduce((a, b) => (a === "no" || b === "no" ? "no" : a === "maybe" || b === "maybe" ? "maybe" : "yes"));
+    const yes = people.filter(p => verdict(p) === "yes"), maybe = people.filter(p => verdict(p) === "maybe");
+    const names = list => list.map(p => `<span class="chip">${esc(p.id)}</span>`).join("");
+    const used = allRules().filter(r => r.type === "agent.tool" && r.actions.includes("invoke") && toolRuleFits(r, attrs));
+    const roles = [...new Set([...people.flatMap(p => p.roles), ...allRules().flatMap(r => r.roles)])].filter(r => r !== "*").sort();
+    return `<div class="chips">${yes.length ? names(yes) : `<span class="muted small">Nobody yet.</span>`}</div>` +
+      (maybe.length ? `<div class="muted small">Also, if a custom condition of a rule holds:</div><div class="chips">${names(maybe)}</div>` : "") +
+      `<small>${draft ? "As the rules draft says. " : ""}An agent acting for a person gets no more than that person. Each call still returns only the fields the caller may read.</small>` +
+      (used.length ? `<div class="muted small">The rules that decide it:</div>${used.map(r => `<div class="sentence small">${ruleSentence(r)}</div>`).join("")}` : "") +
+      `<div class="row"><select class="input" data-on-change="tbSet" data-k="role" aria-label="Role"><option value="">Choose a role…</option>` +
+      roles.map(r => `<option value="${esc(r)}" ${r === t.role ? "selected" : ""}>${esc(W.role(r).many)}</option>`).join("") + `</select>` +
+      `<button class="btn sm" data-act="tbRule">${icon("plus")}Let them use ${esc(t.source)}'s tools</button></div>` +
+      `<small>Adds a rule to the rules draft: the role may see and call every data tool over this source. To keep others out, change the broader rules on the <a href="#/admin/rules">Rules</a> page.</small>`;
+  }
+  // toolRuleFits says whether a tool rule can be about a data tool with attrs.
+  const toolRuleFits = (r, attrs) => W.matchCondition(r.when || "").ids.every(id => !(id === "mcp" || id === "tool" || id.startsWith("source:") && id.slice(7) !== attrs.source));
+  const ruleSentence = r => {
+    const w = W.rule(r);
+    return `<b>${esc(w.who)}</b> ${w.verb} ${esc(w.actions.join(", "))} on ${esc(w.what)}${w.when ? ` when ${esc(w.when.text)}` : ""}${w.when && w.when.custom ? ` ${tech(w.when.custom)}` : ""}`;
   };
   function toolDrawer() {
     const t = tb, src = sources.find(s => s.id === t.source), sdef = defOf(src && src.active);
     const out = (g, f) => t.outputs.find(o => o.group === g && o.field === f);
-    const input = (k, v, ph = "") => `<input class="input" value="${esc(v)}" placeholder="${esc(ph)}" data-on-change="tbSet" data-k="${k}" autocomplete="off">`;
+    const input = (k, v, ph = "", act = "tbSet") => `<input class="input" value="${esc(v)}" placeholder="${esc(ph)}" data-on-change="${act}" data-k="${k}" autocomplete="off">`;
     openDrawer(t.isNew ? "New data tool" : `Change ${t.name}`,
-      (t.isNew ? `<label class="field"><span>Over</span><select class="input" data-on-change="tbSource">${activeSources().map(s =>
-        `<option ${s.id === t.source ? "selected" : ""}>${esc(s.id)}</option>`).join("")}</select></label>` +
-        `<label class="field"><span>Name</span>${input("name", t.name, "read_climate")}<small>What agents call it: lowercase letters, digits and underscores.</small></label>` : "") +
-      `<label class="field"><span>What it gives</span>${input("description", t.description, "Latest air temperature of one greenhouse.")}</label>` +
+      (t.isNew ? `<label class="field"><span>Data source</span><select class="input" data-on-change="tbSource">${activeSources().map(s =>
+        `<option ${s.id === t.source ? "selected" : ""}>${esc(s.id)}</option>`).join("")}</select><small>The kind of data the tool serves: its readings and fields.</small></label>` : "") +
       `<div class="field"><span>Readings</span>${radio("tbOp", "tbOp", t.operation, [["latest", "The latest reading"], ["history", "Past readings, newest first"]])}` +
         (t.operation === "history" ? `<label class="field"><span>At most per call</span>${input("max", t.max, "50")}</label>` : "") + `</div>` +
       `<div class="field"><span>Which device</span>${radio("tbMode", "tbMode", t.mode, [["string", "The caller names it"], ["enum", "The caller picks from a list"], ["fixed", "Always the same"]])}` +
         (t.mode === "fixed" ? `<label class="field"><span>Document</span>${input("fixed", t.fixed, "sensor/gh-north-1")}</label>` :
           `<label class="field"><span>Argument</span>${input("arg", t.arg, "sensor")}</label>` +
           (t.mode === "enum" ? `<label class="field"><span>Choices</span><textarea class="input mono" rows="3" data-on-change="tbSet" data-k="keys" placeholder="north = sensor/gh-north-1">${esc(t.keys)}</textarea></label>` : "")) + `</div>` +
-      `<div class="field"><span>Fields it returns</span>${sdef ? `<table class="tbl"><thead><tr><th></th><th>Field</th><th>Returned as</th><th>Kind</th></tr></thead><tbody>` +
-        sdef.groups.flatMap(g => g.fields.map(f => { const o = out(g.name, f);
-          return `<tr><td><input type="checkbox" data-on-change="tbOut" data-g="${esc(g.name)}" data-f="${esc(f)}" ${o ? "checked" : ""}></td>` +
+      `<div class="field"><span>Fields it offers</span>${sdef ? `<table class="tbl"><thead><tr><th>Offer</th><th>Field the device sends</th><th>Name on MCP</th><th>Kind</th></tr></thead><tbody>` +
+        sdef.groups.flatMap(g => g.fields.map(f => { const o = out(g.name, f), name = o ? o.name : t.names[outKey(g.name, f)] || mcpName(f);
+          return `<tr><td><input type="checkbox" data-on-change="tbOut" data-g="${esc(g.name)}" data-f="${esc(f)}" ${o ? "checked" : ""} aria-label="Offer ${esc(f)}"></td>` +
             `<td><code>${esc(f)}</code> <small class="muted">${esc(g.name)} · ${esc(W.label(g.label).name)}</small></td>` +
-            `<td>${o ? `<input class="input" value="${esc(o.name)}" data-on-change="tbOutName" data-g="${esc(g.name)}" data-f="${esc(f)}">` : ""}</td>` +
-            `<td>${o ? `<select class="input" data-on-change="tbOutType" data-g="${esc(g.name)}" data-f="${esc(f)}">${["any", "number", "string", "boolean", "object", "array"].map(x =>
-              `<option ${x === (o.type || "any") ? "selected" : ""}>${x}</option>`).join("")}</select>` : ""}</td></tr>`; })).join("") + `</tbody></table>` :
+            `<td><input class="input" value="${esc(name)}" data-on-change="tbOutName" data-g="${esc(g.name)}" data-f="${esc(f)}" ${o ? "" : "disabled"}></td>` +
+            `<td><select class="input" data-on-change="tbOutType" data-g="${esc(g.name)}" data-f="${esc(f)}" ${o ? "" : "disabled"}>${["any", "number", "string", "boolean", "object", "array"].map(x =>
+              `<option ${x === ((o && o.type) || "any") ? "selected" : ""}>${x}</option>`).join("")}</select></td></tr>`; })).join("") + `</tbody></table>` +
+        `<small>Agents get each offered field under its name on MCP; the device's own name stays inside fga.</small>` :
         `<div class="muted small">The source has no active version.</div>`}</div>` +
       `<div class="field"><span>When the caller may not read a group</span>${radio("tbUnreadable", "tbUnreadable", t.on_unreadable || "skip_reading",
         [["skip_fields", "Leave out that group's fields"], ["skip_reading", "Leave out the whole reading"]])}</div>` +
+      `<fieldset><legend>Published on MCP as</legend>` +
+        `<label class="field"><span>Shown as</span>${input("title", t.title, "Temperature: latest reading", "tbTitle")}<small>The title people see in their AI client.</small></label>` +
+        (t.isNew ? `<label class="field"><span>Name</span>${input("name", t.name, "temperature_latest", "tbName")}<small>What agents call it: lowercase letters, digits and underscores.</small></label>` :
+          `<div class="field"><span>Name</span>${tech(t.name)}</div>`) +
+        `<label class="field"><span>What it gives</span>${input("description", t.description, "Latest air temperature of one greenhouse.")}<small>Agents read this to choose the tool.</small></label></fieldset>` +
+      `<div class="field"><span>Who may use it</span>${whoMayUse(t, src)}</div>` +
       `<div class="field"><span>Preview as yourself</span>${input("preview", t.preview, t.mode === "fixed" ? "{}" : `{"${t.arg}": "gh-1"}`)}` +
         `<button class="btn sm" data-act="previewTool">${icon("eye")}Preview</button>${t.answer ? `<pre class="code">${esc(t.answer)}</pre>` : ""}` +
         `<small>Runs the tool with your own access, as a call would${src && src.encryption === "client" ? "; end-to-end encrypted readings cannot be previewed here" : ""}.</small></div>`,
       `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn primary" data-act="saveTool">Save draft</button>`, { wide: true });
   }
+  const suggest = () => {
+    if (!tb.nameSet && tb.isNew) tb.name = suggestName(tb);
+    if (!tb.titleSet) tb.title = suggestTitle(tb);
+  };
   acts.tbSet = (d, el) => { tb[d.k] = el.value; };
-  acts.tbSource = (d, el) => { tb.source = el.value; tb.outputs = []; toolDrawer(); };
-  acts.tbOp = (d, el) => { tb.operation = el.value; toolDrawer(); };
+  acts.tbName = (d, el) => { tb.name = el.value; tb.nameSet = true; };
+  acts.tbTitle = (d, el) => { tb.title = el.value; tb.titleSet = true; };
+  acts.tbSource = (d, el) => { tb.source = el.value; tb.outputs = []; tb.names = {}; suggest(); toolDrawer(); };
+  acts.tbOp = (d, el) => { tb.operation = el.value; suggest(); toolDrawer(); };
   acts.tbMode = (d, el) => { tb.mode = el.value; toolDrawer(); };
   acts.tbUnreadable = (d, el) => { tb.on_unreadable = el.value; };
   acts.tbOut = (d, el) => {
-    tb.outputs = tb.outputs.filter(o => !(o.group === d.g && o.field === d.f));
-    if (el.checked) tb.outputs.push({ name: d.f.slice(1).replace(/[^a-z0-9_]/gi, "_").toLowerCase(), group: d.g, field: d.f, type: "any" });
+    const k = outKey(d.g, d.f), had = tb.outputs.find(o => o.group === d.g && o.field === d.f);
+    if (had) tb.names[k] = had.name;
+    tb.outputs = tb.outputs.filter(o => o !== had);
+    if (el.checked) tb.outputs.push({ name: tb.names[k] || mcpName(d.f), group: d.g, field: d.f, type: "any" });
     toolDrawer();
   };
   const outOf = d => tb.outputs.find(o => o.group === d.g && o.field === d.f);
-  acts.tbOutName = (d, el) => { outOf(d).name = el.value; };
+  acts.tbOutName = (d, el) => { outOf(d).name = el.value.trim(); };
   acts.tbOutType = (d, el) => { outOf(d).type = el.value; };
+  // tbRule adds a rule to the rules draft, started from the rules in force
+  // if there is none: the chosen role may see and call every data tool
+  // over the tool's source. It is in force once the draft is signed.
+  acts.tbRule = async () => {
+    if (!tb.role) return toast("Choose a role", "bad");
+    if (!policy) return toast("The rules could not be read", "bad");
+    if (!draft) draft = { format: "fga.policy-draft/v1", base_epoch: policy.epoch, base_digest: policy.digest, documents: JSON.parse(JSON.stringify(policy.documents)), changes: [] };
+    let file = Object.keys(draft.documents).find(f => draft.documents[f].resource === "agent.tool" && draft.documents[f].set === "business");
+    if (!file) draft.documents[file = "policies/agent-tool.json"] = { format: "fga.policy/v1", set: "business", resource: "agent.tool", scope: "", rules: [] };
+    const all = allRules().map(x => x.id), base = `${tb.role}-use-${tb.source}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48);
+    let id = base;
+    for (let i = 2; all.includes(id); i++) id = `${base}-${i}`;
+    draft.documents[file].rules.push({ id, effect: "allow", actions: ["discover", "invoke"], roles: [tb.role],
+      when: `resource.attributes.kind == "data" && resource.attributes.source == "${tb.source}"` });
+    draft.changes.push(`New rule ${id}`);
+    if (await saveDraft()) { toast(`Added ${id} to the rules draft. It is in force once the draft is signed and fga-decision restarts with it.`, "ok"); toolDrawer(); }
+  };
   function toolRecord(t) {
     const bad = m => (toast(m, "bad"), null);
     if (!/^[a-z][a-z0-9_]{0,63}$/.test(t.name)) return bad("Name it with lowercase letters, digits and underscores, starting with a letter");
+    const title = t.title.trim();
+    if (title.length > 100 || /[\n\t]/.test(title)) return bad("Keep the title to one line of at most 100 characters");
     if (!t.description.trim()) return bad("Say what it gives");
-    if (!t.outputs.length) return bad("Choose at least one field");
+    if (!t.outputs.length) return bad("Offer at least one field");
+    const bad1 = t.outputs.find(o => !/^[a-z][a-z0-9_]{0,63}$/.test(o.name));
+    if (bad1) return bad(`The name ${bad1.name || "(empty)"} on MCP: lowercase letters, digits and underscores, starting with a letter`);
+    if (new Set(t.outputs.map(o => o.name)).size !== t.outputs.length) return bad("Give every offered field its own name on MCP");
     const arg = t.arg.trim(), select = t.mode === "fixed" ? { fixed: t.fixed.trim() } : { argument: arg };
     const args = [];
     if (t.mode === "enum") {
       select.keys = Object.fromEntries(t.keys.split("\n").map(l => l.split("=").map(x => x.trim())).filter(([v, k]) => v && k));
       args.push({ name: arg, type: "enum", values: Object.keys(select.keys) });
     } else if (t.mode === "string") args.push({ name: arg, type: "string" });
-    return { format: "fga.data-tool/v1", name: t.name, description: t.description.trim(), source: t.source, operation: t.operation,
+    return { format: "fga.data-tool/v1", name: t.name, ...(title ? { title } : {}), description: t.description.trim(), source: t.source, operation: t.operation,
       ...(args.length ? { arguments: args } : {}), select, outputs: t.outputs.map(o => ({ name: o.name, group: o.group, field: o.field, ...(o.type && o.type !== "any" ? { type: o.type } : {}) })),
       on_unreadable: t.on_unreadable || "skip_reading", ...(t.operation === "history" && Number(t.max) ? { history: { max_readings: Number(t.max) } } : {}) };
   }
@@ -948,7 +1056,7 @@
       }).join("")}</div><small>A rule that forbids always wins over one that allows. Hard limits are checked before all other rules.</small></div>` +
       `<div class="field"><span>Who</span><div class="check-grid">${roles.map(r => `<label class="check"><input type="checkbox" data-on-change="rfRole" data-r="${esc(r)}" ${rf.roles.has(r) ? "checked" : ""}>${esc(W.role(r).many)}</label>`).join("")}</div></div>` +
       `<div class="field"><span>May</span><div class="check-grid">${actionsFor(t).map(a => `<label class="check" title="${esc(W.action(a, t).help)}"><input type="checkbox" data-on-change="rfAction" data-a="${esc(a)}" ${rf.actions.has(a) ? "checked" : ""}>${esc(W.action(a, t).label)}</label>`).join("") || '<span class="muted small">No known actions for this kind of thing.</span>'}</div></div>` +
-      `<div class="field"><span>Only when</span>${W.conditionsFor(t).map(c => `<label class="check"><input type="checkbox" data-on-change="rfCond" data-c="${esc(c.id)}" ${rf.conds.has(c.id) ? "checked" : ""}>${esc(W.condText(c, t))}</label>`).join("")}` +
+      `<div class="field"><span>Only when</span>${[...W.conditionsFor(t), ...[...rf.conds].filter(c => c.startsWith("source:")).map(W.condition)].map(c => `<label class="check"><input type="checkbox" data-on-change="rfCond" data-c="${esc(c.id)}" ${rf.conds.has(c.id) ? "checked" : ""}>${esc(W.condText(c, t))}</label>`).join("")}` +
       `<label class="field sub"><span>Custom condition (CEL, as fga reads it)</span><textarea class="input" id="rfCustom" data-on-input="rfCustom" placeholder="resource.attributes.label_rank < 2">${esc(rf.custom)}</textarea></label></div>` +
       `<div class="preview-rule"><small>Reads as</small><div id="rfPreview"></div></div>`;
     rfPreview();
