@@ -20,6 +20,13 @@ import (
 
 var delegationID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
+// IDs of fga's data sources and data tools (docs/design/mcp-data-tools.md
+// in fga).
+var (
+	sourceID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+	toolName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+)
+
 // adminCache remembers for a minute who the admin API accepted, so a page
 // load does not ask on every call.
 type adminCache struct {
@@ -31,14 +38,15 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 	if s.admin == nil {
 		return
 	}
+	idOf := map[string]*regexp.Regexp{"/v1/admin/delegations/": delegationID, "/v1/admin/sources/": sourceID, "/v1/admin/data-tools/": toolName}
 	id := func(prefix, suffix string) func(*http.Request) (string, bool) {
 		return func(r *http.Request) (string, bool) {
 			v := r.PathValue("id")
-			ok := personID.MatchString(v)
-			if prefix == "/v1/admin/delegations/" {
-				ok = delegationID.MatchString(v)
+			re, ok := idOf[prefix]
+			if !ok {
+				re = personID
 			}
-			return prefix + url.PathEscape(v) + suffix, ok
+			return prefix + url.PathEscape(v) + suffix, re.MatchString(v)
 		}
 	}
 	fixed := func(p string) func(*http.Request) (string, bool) {
@@ -56,6 +64,18 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/admin/spaces", s.authed(s.forward(fixed("/v1/admin/buckets"))))
 	mux.HandleFunc("GET /api/admin/rules", s.authed(s.forward(fixed("/v1/admin/policy"))))
 	mux.HandleFunc("GET /api/admin/events", s.authed(s.forward(fixed("/v1/admin/events"), "limit")))
+	mux.HandleFunc("GET /api/admin/sources", s.authed(s.forward(fixed("/v1/admin/sources"), "after", "limit")))
+	mux.HandleFunc("POST /api/admin/sources", s.authed(s.forward(fixed("/v1/admin/sources"))))
+	mux.HandleFunc("PUT /api/admin/sources/{id}", s.authed(s.forward(id("/v1/admin/sources/", ""))))
+	for _, step := range []string{"try", "review", "disable"} {
+		mux.HandleFunc("POST /api/admin/sources/{id}/"+step, s.authed(s.forward(id("/v1/admin/sources/", "/"+step))))
+	}
+	mux.HandleFunc("GET /api/admin/data-tools", s.authed(s.forward(fixed("/v1/admin/data-tools"), "source", "after", "limit")))
+	mux.HandleFunc("POST /api/admin/data-tools", s.authed(s.forward(fixed("/v1/admin/data-tools"))))
+	mux.HandleFunc("PUT /api/admin/data-tools/{id}", s.authed(s.forward(id("/v1/admin/data-tools/", ""))))
+	for _, step := range []string{"review", "disable"} {
+		mux.HandleFunc("POST /api/admin/data-tools/{id}/"+step, s.authed(s.forward(id("/v1/admin/data-tools/", "/"+step))))
+	}
 
 	mux.HandleFunc("GET /api/admin/rights", s.authed(s.adminOnly(func(w http.ResponseWriter, r *http.Request, _ string) {
 		writeJSON(w, http.StatusOK, map[string]any{"rights": Rights, "profiles": s.store.Profiles()})
@@ -141,6 +161,25 @@ func (s *Server) forward(target func(*http.Request) (string, bool), query ...str
 		}
 		relay(w, resp)
 	}
+}
+
+// previewTool runs a draft data tool as the signed-in person, through
+// fga's file API with their own pass (DTL-008): fga decides list on the
+// source's space and every read, as for a call. The console sees the
+// answer only to show it to that person.
+func (s *Server) previewTool(w http.ResponseWriter, r *http.Request, person string) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err != nil || !json.Valid(raw) {
+		apiError(w, http.StatusBadRequest, "INVALID_REQUEST")
+		return
+	}
+	resp, err := s.call(r, person, http.MethodPost, "/v1/data-tools/preview", nil, bytes.NewReader(raw), int64(len(raw)),
+		http.Header{"Content-Type": {"application/json"}})
+	if err != nil {
+		s.fgaDown(w, err)
+		return
+	}
+	relay(w, resp)
 }
 
 // isAdmin asks fga's admin API whether person is an administrator.

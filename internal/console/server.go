@@ -115,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/batches/{id}/take-back", s.user(s.takeBack))
 	mux.HandleFunc("GET /api/approvals", s.user(s.approvals))
 	mux.HandleFunc("POST /api/approvals/{id}", s.user(s.decideApproval))
+	mux.HandleFunc("POST /api/data-tools/preview", s.user(s.previewTool))
 	s.adminRoutes(mux)
 	return s.logged(s.secureHeaders(mux))
 }

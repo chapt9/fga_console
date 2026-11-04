@@ -157,6 +157,7 @@
       `<span>fga console<small>${esc(session.organisation)}</small></span></div><nav class="nav">` +
       (session.admin ? `<div class="nav-section">Administration</div>${nav("/admin", "home", "Overview")}${nav("/admin/people", "users", "People")}` +
         `${nav("/admin/rights", "key", "Rights")}${nav("/admin/agents", "bot", "AI agents")}${nav("/admin/spaces", "bucket", "Spaces")}` +
+        `${nav("/admin/sources", "upload", "Data sources")}${nav("/admin/data-tools", "gear", "Data tools")}` +
         `${nav("/admin/rules", "policy", "Rules")}${nav("/admin/audit", "audit", "Audit log")}${nav("/admin/servers", "server", "Servers")}` : "") +
       (can("open") || can("approve") ? `<div class="nav-section">Workspace</div>` : "") +
       (can("open") ? nav("/files", "files", "Files") : "") + (can("approve") ? nav("/approvals", "inbox", "Approvals") : "") + `</nav>` +
@@ -184,9 +185,9 @@
   function closeDrawer() { const d = document.getElementById("drawer"); if (d) d.remove(); }
   acts.closeDrawer = closeDrawer;
   let onConfirm = null;
-  function confirmBox(title, html, label, fn) {
+  function confirmBox(title, html, label, fn, cls = "danger-solid") {
     onConfirm = fn;
-    openDrawer(title, html, `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn danger-solid" data-act="confirmYes">${esc(label)}</button>`);
+    openDrawer(title, html, `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn ${cls}" data-act="confirmYes">${esc(label)}</button>`);
   }
   acts.confirmYes = () => { const fn = onConfirm; onConfirm = null; closeDrawer(); if (fn) fn(); };
 

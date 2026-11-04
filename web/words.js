@@ -61,6 +61,7 @@ window.FGA_WORDS = (() => {
     "manage-members": ["Add and remove members", "Choose who belongs to the project"],
     "manage-leads": ["Choose team leads", "Choose who leads the project"],
     rename: ["Rename", "Change its name and description"],
+    "post-reading": ["Send readings", "Send readings from a device or system into it"],
   };
   const TYPE_ACTIONS = {
     "document.text_unit": { read: ["Read", "Read this section"] },
@@ -77,6 +78,7 @@ window.FGA_WORDS = (() => {
     guest: ["Guest", "Guests", "Can sign in; sees only what is shared with them"],
     agent: ["AI agent", "AI agents", "Software that acts for a person"],
     steward: ["File steward", "File stewards", "Gives people access to single files, without being able to open them"],
+    source: ["Sending system", "Sending systems", "A device or system that sends readings to its data sources, and may do nothing else"],
   };
 
   // Names of rights fga itself defines; the console's own rights carry
