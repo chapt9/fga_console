@@ -531,68 +531,98 @@
         `</tbody></table>` : `<div class="empty">${icon("upload")}<div>No data sources yet.</div></div>`}</div></div>`);
   };
 
-  // The source builder keeps its state in sb; structural changes draw the
-  // drawer again, typing only updates sb.
+  // The source builder keeps its state in sb: the fields the device sends,
+  // under the device's own names, and for each whether fga keeps it and how
+  // sensitive it is. Kept fields of one sensitivity share a group unless a
+  // group is named; each group is stored and checked on its own. Structural
+  // changes draw the drawer again, typing only updates sb.
+  const GROUP_NAME = /^[a-z][a-z0-9_]{0,31}$/;
+  const groupOf = r => r.group.trim() || r.label;
+  const rowOf = f => sb.rows.find(r => r.f === f);
+  const pointerToken = k => k.replace(/~/g, "~0").replace(/\//g, "~1");
+  // leaves are the pointers of a sample's values, nested objects opened.
+  const leaves = (v, at = "", depth = 0) => Object.entries(v).flatMap(([k, x]) => {
+    const f = `${at}/${pointerToken(k)}`;
+    return x && typeof x === "object" && !Array.isArray(x) && Object.keys(x).length && depth < 8 ? leaves(x, f, depth + 1) : [f];
+  });
+  const overlaps = (a, b) => a === b || a.startsWith(b + "/") || b.startsWith(a + "/");
   acts.editSource = d => {
     const s = sources.find(x => x.id === d.id), def = s && defOf(s.draft || s.active);
-    sb = !def ? { isNew: true, id: "", mode: "server", project: "", label: "internal", owner: "", fields: [], assign: {}, sample: "",
-      groups: [{ name: "reading", label: "internal", recipients: "" }], keyMode: "pointer", keyField: "", pattern: "[a-z0-9-]{1,48}", prefix: "", unlisted: "refuse" } :
-      { isNew: false, id: s.id, mode: s.encryption, project: s.project, label: s.label, owner: def.owner, sample: "",
-        groups: def.groups.map(g => ({ name: g.name, label: g.label, recipients: (g.recipients || []).join(", ") })),
-        fields: [...new Set([...def.groups.flatMap(g => g.fields), ...(def.key.pointer ? [def.key.pointer] : [])])],
-        assign: Object.fromEntries(def.groups.flatMap(g => g.fields.map(f => [f, g.name]))),
-        keyMode: def.key.mode, keyField: def.key.pointer || "", pattern: def.key.pattern || "", prefix: def.key.prefix || "", unlisted: def.unlisted || "refuse" };
+    sb = { isNew: !def, sample: "", newField: "", rows: [], readers: {}, keyMode: "pointer", keyField: "", pattern: "[a-z0-9-]{1,48}", prefix: "", unlisted: "refuse",
+      id: "", mode: "server", project: "", label: "internal", owner: "" };
+    if (def) {
+      Object.assign(sb, { id: s.id, mode: s.encryption, project: s.project, label: s.label, owner: def.owner,
+        rows: def.groups.flatMap(g => g.fields.map(f => ({ f, keep: true, label: g.label, group: g.name === g.label ? "" : g.name }))),
+        readers: Object.fromEntries(def.groups.map(g => [g.name, (g.recipients || []).join(", ")])),
+        keyMode: def.key.mode, keyField: def.key.pointer || "", pattern: def.key.pattern || "", prefix: def.key.prefix || "", unlisted: def.unlisted || "refuse" });
+      if (def.key.pointer && !rowOf(def.key.pointer)) sb.rows.push({ f: def.key.pointer, keep: false, label: sb.label, group: "" });
+    }
     sourceDrawer();
   };
   function sourceDrawer() {
     const s = sb, client = s.mode === "client";
-    const groupOptions = cur => `<option value="">Not kept</option>` + s.groups.map(g => `<option ${g.name === cur ? "selected" : ""}>${esc(g.name)}</option>`).join("");
     const input = (k, v, ph = "", extra = "") => `<input class="input" value="${esc(v)}" placeholder="${esc(ph)}" data-on-change="sbSet" data-k="${k}" autocomplete="off" ${extra}>`;
+    const kept = s.rows.filter(r => r.keep), names = [...new Set(kept.map(groupOf))];
+    const unkept = s.rows.filter(r => !r.keep && r.f !== s.keyField);
     openDrawer(s.isNew ? "New data source" : `Change ${s.id}`,
       (s.isNew ? `<label class="field"><span>Name</span>${input("id", s.id, "greenhouse-climate")}<small>Also the name of its space. Lowercase letters, digits and dashes.</small></label>` +
         `<label class="field"><span>Project</span>${input("project", s.project, "p1", `list="sbProjects"`)}<datalist id="sbProjects">${allProjects().map(x => `<option value="${esc(x)}">`).join("")}</datalist></label>` +
-        `<label class="field"><span>Default sensitivity</span><select class="input" data-on-change="sbSet" data-k="label">${labelOptions(s.label)}</select></label>` +
+        `<label class="field"><span>Default sensitivity</span><select class="input" data-on-change="sbSet" data-k="label">${labelOptions(s.label)}</select><small>New fields start at this sensitivity.</small></label>` +
         `<div class="field"><span>Encryption</span>${radio("sbMode", "sbMode", s.mode, [["server", W.encryption("server").name], ["client", W.encryption("client").name]])}</div>` : "") +
       `<label class="field"><span>Owner of the readings</span>${input("owner", s.owner, "lena", `list="sbPeople"`)}<datalist id="sbPeople">${people.filter(p => !p.disabled).map(p => `<option value="${esc(p.id)}">`).join("")}</datalist></label>` +
-      `<label class="field"><span>A sample reading</span><textarea class="input mono" rows="4" data-on-change="sbSet" data-k="sample" placeholder='{"sensor":"gh-1","temperature":21.5}'>${esc(s.sample)}</textarea>` +
-      `<small>Made-up values are fine: only the field names are used, and the sample is tested when you save.</small></label>` +
-      `<button class="btn sm" data-act="sbFields">Read its fields</button>` +
-      `<div class="field"><span>Field groups</span><table class="tbl"><thead><tr><th>Group</th><th>Sensitivity</th>${client ? "<th>Readers</th>" : ""}</tr></thead><tbody>` +
-        s.groups.map((g, i) => `<tr><td><input class="input" value="${esc(g.name)}" data-on-change="sbGroup" data-i="${i}" data-k="name"></td>` +
-          `<td><select class="input" data-on-change="sbGroup" data-i="${i}" data-k="label">${labelOptions(g.label)}</select></td>` +
-          (client ? `<td><input class="input" value="${esc(g.recipients)}" placeholder="lena, alice" data-on-change="sbGroup" data-i="${i}" data-k="recipients"></td>` : "") + `</tr>`).join("") +
-      `</tbody></table><button class="btn sm" data-act="sbAddGroup">${icon("plus")}Add group</button>` +
-      `<small>${client ? "Readers get a key for their groups' sections of every reading." : "The rules decide who reads each group, by its sensitivity and its name."}</small></div>` +
-      `<div class="field"><span>Fields</span>${s.fields.length ? `<table class="tbl"><thead><tr><th>Field</th><th>Group</th><th>Names the device</th></tr></thead><tbody>` +
-        s.fields.map(f => `<tr><td><code>${esc(f)}</code></td><td><select class="input" data-on-change="sbAssign" data-f="${esc(f)}">${groupOptions(s.assign[f])}</select></td>` +
-          `<td><input type="radio" name="sbKeyField" value="${esc(f)}" data-on-change="sbSet" data-k="keyField" ${f === s.keyField ? "checked" : ""}></td></tr>`).join("") +
-        `</tbody></table>` : `<div class="muted small">Paste a sample and read its fields.</div>`}</div>` +
+      `<div class="field"><span>1. What the device sends</span><textarea class="input mono" rows="4" data-on-change="sbSet" data-k="sample" placeholder='{"sensor":"gh-1","temperature":21.5,"gps":{"lat":48.1,"lon":11.5}}'>${esc(s.sample)}</textarea>` +
+        `<small>Paste one reading as the device sends it. Made-up values are fine: only the field names are used, the device's own names, nested ones too. The sample is tested when you save.</small>` +
+        `<div class="row"><button class="btn sm" data-act="sbFields">Read its fields</button>` +
+        `<input class="input" value="${esc(s.newField)}" placeholder="or add one: /gps/alt" data-on-change="sbSet" data-k="newField" autocomplete="off"><button class="btn sm" data-act="sbAddField">${icon("plus")}Add</button></div></div>` +
+      `<div class="field"><span>2. What fga keeps</span>${s.rows.length ? `<table class="tbl"><thead><tr><th>Field</th><th>Keep</th><th>Sensitivity</th><th>Group</th><th>Names the device</th></tr></thead><tbody>` +
+        s.rows.map(r => `<tr><td><code>${esc(r.f)}</code></td><td><input type="checkbox" data-on-change="sbKeep" data-f="${esc(r.f)}" ${r.keep ? "checked" : ""} aria-label="Keep ${esc(r.f)}"></td>` +
+          `<td><select class="input" data-on-change="sbLabel" data-f="${esc(r.f)}" ${r.keep ? "" : "disabled"}>${labelOptions(r.label)}</select></td>` +
+          `<td><input class="input" value="${esc(r.group)}" placeholder="${esc(r.label)}" data-on-change="sbRowGroup" data-f="${esc(r.f)}" autocomplete="off" ${r.keep ? "" : "disabled"}></td>` +
+          `<td><input type="radio" name="sbKeyField" value="${esc(r.f)}" data-on-change="sbSet" data-k="keyField" ${r.f === s.keyField ? "checked" : ""}></td></tr>`).join("") +
+        `</tbody></table><small>Fields of one sensitivity are kept together; name a group to keep some apart. Each group is stored and checked on its own, ` +
+        `so people and agents get only the groups they may read.</small>` : `<div class="muted small">Paste a sample and read its fields.</div>`}</div>` +
+      (names.length ? `<div class="field"><span>Groups</span>${client ? `<table class="tbl"><thead><tr><th>Group</th><th>Readers</th></tr></thead><tbody>` +
+        names.map(n => `<tr><td>${esc(n)} <small class="muted">${esc(W.label(kept.find(r => groupOf(r) === n).label).name)} · ${esc(plural(kept.filter(r => groupOf(r) === n).length, "field"))}</small></td>` +
+          `<td><input class="input" value="${esc(s.readers[n] || "")}" placeholder="lena, alice" data-on-change="sbReaders" data-g="${esc(n)}" autocomplete="off"></td></tr>`).join("") +
+        `</tbody></table><small>Readers get a key for their group's part of every reading.</small>`
+        : `<div class="chips">${names.map(n => `<span class="chip">${esc(n)} · ${esc(W.label(kept.find(r => groupOf(r) === n).label).name)} · ` +
+          `${esc(plural(kept.filter(r => groupOf(r) === n).length, "field"))}</span>`).join("")}</div><small>The rules decide who reads each group, by its sensitivity and its name.</small>`}</div>` : "") +
       `<div class="field"><span>Which document a reading goes to</span>${radio("sbKeyMode", "sbKeyMode", s.keyMode, [["pointer", "One per device, named by the chosen field"],
         ["principal", "One per sending system"], ["fixed", "Always the same document"]])}` +
         `<div class="row">${s.keyMode === "fixed" ? "" : `<label class="field"><span>Allowed names</span>${input("pattern", s.pattern, "[a-z0-9-]{1,48}")}</label>`}` +
         `<label class="field"><span>${s.keyMode === "fixed" ? "Document name" : "Name prefix"}</span>${input("prefix", s.prefix, "sensor/")}</label></div></div>` +
-      `<div class="field"><span>Fields not in any group</span>${radio("sbUnlisted", "sbUnlisted", s.unlisted, [["refuse", "Refuse the reading"], ["drop", "Leave them out"]])}</div>`,
+      `<div class="field"><span>Fields fga does not keep</span>${radio("sbUnlisted", "sbUnlisted", s.unlisted, [["refuse", "Refuse a reading that holds one"], ["drop", "Leave them out and keep the rest"]])}` +
+        (unkept.length && s.unlisted === "refuse" ? `<small>A reading that holds ${unkept.map(r => tech(r.f)).join(", ")} is refused as long as these are not kept.</small>` : "") + `</div>`,
       (s.isNew ? "" : `<button class="btn danger" data-act="stopSource" data-id="${esc(s.id)}">Stop readings</button><span class="spacer"></span>`) +
       `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn primary" data-act="saveSource">Save draft</button>`, { wide: true });
   }
   acts.sbSet = (d, el) => { sb[d.k] = el.value; };
   acts.sbMode = (d, el) => { sb.mode = el.value; sourceDrawer(); };
   acts.sbKeyMode = (d, el) => { sb.keyMode = el.value; sourceDrawer(); };
-  acts.sbUnlisted = (d, el) => { sb.unlisted = el.value; };
-  acts.sbAssign = (d, el) => { sb.assign[d.f] = el.value; };
-  acts.sbGroup = (d, el) => {
-    const g = sb.groups[Number(d.i)], old = g.name;
-    g[d.k] = el.value;
-    if (d.k === "name") { for (const f of sb.fields) if (sb.assign[f] === old) sb.assign[f] = el.value; sourceDrawer(); }
-  };
-  acts.sbAddGroup = () => { sb.groups.push({ name: `group${sb.groups.length + 1}`, label: sb.label || "internal", recipients: "" }); sourceDrawer(); };
+  acts.sbUnlisted = (d, el) => { sb.unlisted = el.value; sourceDrawer(); };
+  acts.sbKeep = (d, el) => { rowOf(d.f).keep = el.checked; sourceDrawer(); };
+  acts.sbLabel = (d, el) => { rowOf(d.f).label = el.value; sourceDrawer(); };
+  acts.sbRowGroup = (d, el) => { rowOf(d.f).group = el.value.trim(); sourceDrawer(); };
+  acts.sbReaders = (d, el) => { sb.readers[d.g] = el.value; };
   acts.sbFields = () => {
     let v;
     try { v = JSON.parse(sb.sample); } catch { return toast("The sample is not JSON", "bad"); }
     if (!v || typeof v !== "object" || Array.isArray(v)) return toast("A reading is one JSON object", "bad");
-    sb.fields = Object.keys(v).map(k => "/" + k.replace(/~/g, "~0").replace(/\//g, "~1"));
-    for (const f of sb.fields) if (!(f in sb.assign)) sb.assign[f] = sb.groups[0].name;
-    if (!sb.keyField) sb.keyField = sb.fields.find(f => /sensor|device|id/.test(f)) || "";
+    const found = leaves(v);
+    // The sample's fields in its order, with what was set for them; other
+    // fields stay unless the sample shows them to be nested or a parent.
+    sb.rows = [...found.map(f => rowOf(f) || { f, keep: true, label: sb.label || "internal", group: "" }),
+      ...sb.rows.filter(r => !found.some(f => overlaps(f, r.f)))];
+    if (!rowOf(sb.keyField)) sb.keyField = found.find(f => /sensor|device|id/i.test(f)) || "";
+    sourceDrawer();
+  };
+  acts.sbAddField = () => {
+    let f = sb.newField.trim();
+    if (f && !f.startsWith("/")) f = "/" + f;
+    if (!/^(\/[^/]+)+$/.test(f)) return toast("A field is a path such as /gps/alt", "bad");
+    if (sb.rows.some(r => overlaps(r.f, f))) return toast(`${f} is, holds or lies inside a field already listed`, "bad");
+    sb.rows.push({ f, keep: true, label: sb.label || "internal", group: "" });
+    sb.newField = "";
     sourceDrawer();
   };
   function sourceRecord(s) {
@@ -600,9 +630,22 @@
     if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(s.id)) return bad("Name it with lowercase letters, digits and dashes");
     if (!s.owner.trim()) return bad("Name the owner of the readings");
     if (s.isNew && !s.project.trim()) return bad("Give the source a project");
-    const groups = s.groups.map(g => ({ name: g.name.trim(), label: g.label, fields: s.fields.filter(f => s.assign[f] === g.name),
-      ...(s.mode === "client" ? { recipients: g.recipients.split(",").map(x => x.trim()).filter(Boolean) } : {}) })).filter(g => g.fields.length);
-    if (!groups.length) return bad("Put at least one field into a group");
+    const groups = [];
+    for (const r of s.rows.filter(x => x.keep)) {
+      const name = groupOf(r);
+      if (!GROUP_NAME.test(name)) return bad(`The group ${name}: lowercase letters, digits and underscores, starting with a letter`);
+      let g = groups.find(x => x.name === name);
+      if (!g) groups.push(g = { name, label: r.label, fields: [] });
+      else if (g.label !== r.label) return bad(`The fields of group ${name} need one sensitivity, or name another group`);
+      g.fields.push(r.f);
+    }
+    if (!groups.length) return bad("Keep at least one field");
+    if (s.mode === "client") {
+      for (const g of groups) {
+        g.recipients = (s.readers[g.name] || "").split(",").map(x => x.trim()).filter(Boolean);
+        if (!g.recipients.length) return bad(`Name the readers of the group ${g.name}`);
+      }
+    }
     if (s.keyMode === "pointer" && !s.keyField) return bad("Choose the field that names the device");
     const key = s.keyMode === "fixed" ? { mode: "fixed", prefix: s.prefix } : { mode: s.keyMode, pattern: s.pattern, prefix: s.prefix,
       ...(s.keyMode === "pointer" ? { pointer: s.keyField } : {}) };
