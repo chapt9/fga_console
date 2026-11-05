@@ -231,6 +231,10 @@
   // person's key box, in its own window, and this page hands them to the
   // console server. Keys never reach this page.
   const AUDIENCES = ["fga-storage", "fga-admin"];
+  // The add-on asks in one window at a time, and answers "pending" while
+  // one asks (mosaic-key-store docs/sign-in.md): that window may be another
+  // page's, so the person is told to read its address.
+  const ADDON_PENDING = "The add-on's sign-in window is already open: check the address it names, then finish or cancel it";
   const hasAddon = () => document.documentElement.dataset.mosaicKeyStore === "1";
   function askAddon(interactive) {
     return new Promise((resolve, reject) => {
@@ -250,7 +254,7 @@
     if (!hasAddon()) return toast("Install the mosaic-key-store add-on first", "bad");
     let passes;
     try { passes = await askAddon(true); }
-    catch (e) { return toast(e.message === "cancelled" ? "Sign-in cancelled" : "The add-on did not sign you in", "bad"); }
+    catch (e) { return toast(e.message === "cancelled" ? "Sign-in cancelled" : e.message === "pending" ? ADDON_PENDING : "The add-on did not sign you in", "bad"); }
     const r = await api("POST", "/api/signin/keys", { passes });
     if (!r.ok) return toast(plainError(r.error), "bad");
     await start();
@@ -286,7 +290,7 @@
   acts.keyContinue = async () => {
     let passes;
     try { passes = await askAddon(true); }
-    catch (e) { return toast(e.message === "cancelled" ? "Still locked" : "The add-on did not sign you in", "bad"); }
+    catch (e) { return toast(e.message === "cancelled" ? "Still locked" : e.message === "pending" ? ADDON_PENDING : "The add-on did not sign you in", "bad"); }
     const r = await api("POST", "/api/session/passes", { passes });
     if (!r.ok) return toast(plainError(r.error), "bad");
     session.passes_until = r.data.passes_until;
