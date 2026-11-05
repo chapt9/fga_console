@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="320" viewBox="0 0 680 320" role="img">
+<title>One reading, locked group by group for its readers</title>
+<desc>A sensor sends a reading in four groups: temperature and humidity band (internal), exact humidity (confidential) and chemistry (restricted). Lena, the owner, gets key copies for all four; Alice for three; the agent only for temperature and humidity band.</desc>
+<style>
+text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.th{font-size:14px;font-weight:500;fill:#2C2C2A}.ts{font-size:12px;fill:#5F5E5A}
+.box{fill:#F1EFE8;stroke:#B4B2A9}
+.arr{stroke:#888780;stroke-width:1.5;fill:none}
+.c-teal>rect{fill:#E1F5EE;stroke:#0F6E56}.c-teal>.th{fill:#085041}.c-teal>.ts{fill:#0F6E56}
+.c-amber>rect{fill:#FAEEDA;stroke:#854F0B}.c-amber>.th{fill:#633806}.c-amber>.ts{fill:#854F0B}
+.c-red>rect{fill:#FCEBEB;stroke:#A32D2D}.c-red>.th{fill:#791F1F}.c-red>.ts{fill:#A32D2D}
+</style>
+<rect width="680" height="320" fill="#ffffff"/>
+<g><rect class="box" x="30" y="130" width="140" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="100" y="148" text-anchor="middle" dominant-baseline="central">Sensor</text>
+<text class="ts" x="100" y="168" text-anchor="middle" dominant-baseline="central">locks each group</text></g>
+<line x1="170" y1="158" x2="230" y2="65" class="arr"/>
+<line x1="170" y1="158" x2="230" y2="135" class="arr"/>
+<line x1="170" y1="158" x2="230" y2="205" class="arr"/>
+<line x1="170" y1="158" x2="230" y2="275" class="arr"/>
+<g class="c-teal"><rect x="230" y="40" width="170" height="50" rx="8" stroke-width="0.5"/>
+<text class="th" x="315" y="57" text-anchor="middle" dominant-baseline="central">Temperature</text>
+<text class="ts" x="315" y="75" text-anchor="middle" dominant-baseline="central">internal</text></g>
+<g class="c-teal"><rect x="230" y="110" width="170" height="50" rx="8" stroke-width="0.5"/>
+<text class="th" x="315" y="127" text-anchor="middle" dominant-baseline="central">Humidity band</text>
+<text class="ts" x="315" y="145" text-anchor="middle" dominant-baseline="central">internal, coarse</text></g>
+<g class="c-amber"><rect x="230" y="180" width="170" height="50" rx="8" stroke-width="0.5"/>
+<text class="th" x="315" y="197" text-anchor="middle" dominant-baseline="central">Humidity</text>
+<text class="ts" x="315" y="215" text-anchor="middle" dominant-baseline="central">confidential, exact</text></g>
+<g class="c-red"><rect x="230" y="250" width="170" height="50" rx="8" stroke-width="0.5"/>
+<text class="th" x="315" y="267" text-anchor="middle" dominant-baseline="central">Chemistry</text>
+<text class="ts" x="315" y="285" text-anchor="middle" dominant-baseline="central">restricted</text></g>
+<line x1="400" y1="65" x2="500" y2="88" stroke="#1D9E75" stroke-width="1.2"/>
+<line x1="400" y1="135" x2="500" y2="88" stroke="#1D9E75" stroke-width="1.2"/>
+<line x1="400" y1="205" x2="500" y2="88" stroke="#BA7517" stroke-width="1.2"/>
+<line x1="400" y1="275" x2="500" y2="88" stroke="#E24B4A" stroke-width="1.2"/>
+<line x1="400" y1="65" x2="500" y2="173" stroke="#1D9E75" stroke-width="1.2"/>
+<line x1="400" y1="135" x2="500" y2="173" stroke="#1D9E75" stroke-width="1.2"/>
+<line x1="400" y1="205" x2="500" y2="173" stroke="#BA7517" stroke-width="1.2"/>
+<line x1="400" y1="65" x2="500" y2="258" stroke="#1D9E75" stroke-width="1.2"/>
+<line x1="400" y1="135" x2="500" y2="258" stroke="#1D9E75" stroke-width="1.2"/>
+<g><rect class="box" x="500" y="60" width="150" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="575" y="78" text-anchor="middle" dominant-baseline="central">Lena</text>
+<text class="ts" x="575" y="98" text-anchor="middle" dominant-baseline="central">owner: all four</text></g>
+<g><rect class="box" x="500" y="145" width="150" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="575" y="163" text-anchor="middle" dominant-baseline="central">Alice</text>
+<text class="ts" x="575" y="183" text-anchor="middle" dominant-baseline="central">team member: three</text></g>
+<g><rect class="box" x="500" y="230" width="150" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="575" y="248" text-anchor="middle" dominant-baseline="central">agent-7</text>
+<text class="ts" x="575" y="268" text-anchor="middle" dominant-baseline="central">AI agent: two</text></g>
+</svg>
