@@ -96,6 +96,10 @@ func (s *Server) Handler() http.Handler {
 	if s.minter != nil {
 		mux.HandleFunc("POST /api/signin", s.signIn)
 	}
+	if s.cfg.KeySignIn {
+		mux.HandleFunc("POST /api/signin/keys", s.signInKeys)
+		mux.HandleFunc("POST /api/session/passes", s.authed(s.renewKeyPasses))
+	}
 	if s.oidc != nil {
 		mux.HandleFunc("GET /auth/login", s.login)
 		mux.HandleFunc("GET /auth/callback", s.callback)
@@ -226,12 +230,26 @@ func (s *Server) sessionOf(r *http.Request) (*Session, bool) {
 // pass returns the pass a call to fga carries: the person's access token
 // from the organisation's login, or in development a pass minted for them.
 func (s *Server) pass(ctx context.Context, person, audience string) (string, error) {
+	// A person who signed in with a key uses the passes their add-on gave,
+	// never a pass this console makes (keysignin.go).
+	if ss, _ := ctx.Value(sessionKey{}).(*Session); ss != nil && ss.keySession() {
+		if ss.Person != person {
+			return "", errSignedOut
+		}
+		if p, ok := ss.keyPass(audience, s.now().Add(keyPassMargin)); ok {
+			return p, nil
+		}
+		return "", errSignedOut
+	}
 	if s.oidc != nil {
 		ss, _ := ctx.Value(sessionKey{}).(*Session)
 		if ss == nil || ss.Person != person {
 			return "", errSignedOut
 		}
 		return s.accessToken(ctx, ss)
+	}
+	if s.minter == nil {
+		return "", errSignedOut
 	}
 	return s.minter.Pass(person, audience, passLifetime)
 }
@@ -317,15 +335,19 @@ func validKey(k string) bool {
 // ---------------------------------------------------------------- sign-in
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
-	out := map[string]any{"signed_in": false, "organisation": s.cfg.Organisation, "tenant": s.cfg.Tenant, "dev": s.minter != nil}
+	out := map[string]any{"signed_in": false, "organisation": s.cfg.Organisation, "tenant": s.cfg.Tenant, "dev": s.minter != nil,
+		"key_sign_in": s.cfg.KeySignIn}
 	if s.minter != nil {
 		out["people"] = s.cfg.DevSignIn.People
-	} else {
+	} else if s.oidc != nil {
 		out["login"] = "/auth/login"
 	}
 	if ss, ok := s.sessionOf(r); ok {
 		ctx := context.WithValue(r.Context(), sessionKey{}, ss)
 		out["signed_in"], out["person"], out["name"] = true, ss.Person, firstOf(ss.Name, ss.Person)
+		if ss.keySession() {
+			out["with_key"], out["passes_until"] = true, ss.keyPassesUntil()
+		}
 		out["admin"] = s.isAdmin(ctx, ss.Person)
 		rights, ok, err := s.me(ctx, ss.Person)
 		out["access"], out["rights"] = ok, rights

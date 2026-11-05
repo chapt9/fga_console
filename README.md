@@ -97,6 +97,9 @@ in the console and sees only what their rights allow.
   rights". Administrators keep the administrator pages, which fga's admin
   API decides.
 - **Invitations** (done): see "Inviting people".
+- **Signing in with keys** (done): see "Signing in with keys". Each
+  person's page has a "Sign-in keys" part, where an administrator registers
+  a key after checking its fingerprint with them, and removes one.
 - **Keys in the browser** (started): `web/fga-profile1.mjs` is fga's
   client encryption profile 1 written a second time for the browser, on
   WebCrypto only. It is checked against fga's Go SDK in both directions
@@ -208,6 +211,7 @@ Then:
 | `max_upload_mb` | largest upload (default 512) |
 | `oidc` | the organisation's login: `issuer`, `client_id`, `client_secret_file`, optional `scopes`, `auth_params`, `token_auth` (`basic` or `post`), `person_claim` (default `sub`) |
 | `dev_signin` | development sign-in: `issuer`, `key_id`, `key_file`, `people` |
+| `key_sign_in` | `true`: people sign in with the sign-in key in their key box, through the mosaic-key-store add-on |
 
 ### Signing in with the organisation's login
 
@@ -226,6 +230,32 @@ the example. Things found while running it with a local Keycloak 26:
   from a user name alone (Keycloak refuses, rightly); the first passkey is
   registered through the login service's emailed one-time link.
 - fga's roles accept one token issuer each.
+
+### Signing in with keys
+
+With `"key_sign_in": true`, people sign in with the sign-in key in their
+key box (fga `docs/design/sign-in-keys.md`). The console never holds a key
+and makes no pass for them:
+
+1. The person clicks **Sign in with my keys**. The mosaic-key-store add-on
+   opens its own window, which names the console's address. The person
+   unlocks their keys there and agrees.
+2. The add-on signs a pass for `fga-storage` and one for `fga-admin`, and
+   the page sends them to `POST /api/signin/keys`.
+3. The console checks that both passes are of the sign-in key issuer,
+   each for exactly its audience, for one person, with at most 10 minutes
+   left. It then asks fga's `GET /v1/me` with the storage pass, so fga
+   decides who they are. It keeps the passes in the session.
+4. About a minute and a half before they run out, the page asks the add-on
+   for new ones (`POST /api/session/passes`). The add-on's window answers
+   while it stays unlocked. Once it is locked or closed, the page asks the
+   person to unlock again. A key session never falls back to a pass the
+   console makes.
+
+fga's roles need `"sign_in_keys": true` in their `token_issuer`, and each
+person a registered sign-in key. It works beside `dev_signin` or `oidc`.
+The add-on, and the check that runs this in a headless Firefox, are in the
+mosaic-key-store repository (`addon/`).
 
 ### Inviting people
 
@@ -270,6 +300,8 @@ to fga with the signed-in person's pass, and fga decides them.
 |---|---|---|
 | `GET /api/session` | who is signed in, `admin`, `access`, `rights`, `invited` | anyone |
 | `POST /api/signin` `{"person"}` | development sign-in | people in `dev_signin` |
+| `POST /api/signin/keys` `{"passes"}` | sign-in with the add-on's passes, by audience | anyone with a registered sign-in key |
+| `POST /api/session/passes` `{"passes"}` | the add-on's new passes for this key session | signed in with a key |
 | `GET /auth/login`, `GET /auth/callback` | sign-in with the organisation's login | anyone |
 | `GET /invite/{secret}` | an invitation's link: starts the sign-in | anyone |
 | `POST /api/signout` | ends the session (answers the login service's sign-out address, if any) | signed in |
@@ -285,6 +317,7 @@ to fga with the signed-in person's pass, and fga decides them.
 | `GET /api/batches`, `POST /api/batches/{id}/take-back` | access the person gave, together; take a batch back | console users |
 | `GET /api/approvals`, `POST /api/approvals/{id}` `{"decision"}` | requests the person may decide; `approve` or `reject` | console users |
 | `GET /api/admin/people`, `PUT /api/admin/people/{id}`, `POST …/{id}/grant`, `…/revoke`, `…/disable` | fga's admin API: people, rights, disabling (`{"confirm_unreadable": true}` after a last-reader refusal) | administrators |
+| `GET`, `POST /api/admin/people/{id}/sign-in-keys`, `POST …/sign-in-keys/{fingerprint}/remove` | fga's admin API: a person's sign-in keys, registering one (`{"public_key", "label", "limits"}`), removing one | administrators |
 | `GET`, `POST /api/admin/delegations`, `POST …/{id}/revoke` | AI agents' permissions | administrators |
 | `GET`, `POST /api/admin/spaces`; `GET /api/admin/rules`; `GET /api/admin/events` | spaces, signed rules, audit events | administrators |
 | `GET /api/admin/rights`, `PUT /api/admin/profiles` | the console's rights and profiles | administrators |

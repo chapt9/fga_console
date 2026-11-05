@@ -33,6 +33,8 @@ type fakeFGA struct {
 	// noConsole are people fga refuses their own record (GET /v1/me);
 	// everyone else holds the Member profile's capabilities.
 	noConsole map[string]bool
+	// signInKeys are the sign-in keys fga knows, by fingerprint.
+	signInKeys map[string]ed25519.PublicKey
 }
 
 func (f *fakeFGA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -121,9 +123,19 @@ func (f *fakeFGA) verifyFor(auth, audience string) map[string]any {
 	if json.Unmarshal(h, &header) != nil || json.Unmarshal(c, &claims) != nil {
 		return nil
 	}
-	if header["typ"] != "at+jwt" || header["alg"] != "EdDSA" || header["kid"] != "tok-1" ||
-		!ed25519.Verify(f.pub, []byte(parts[0]+"."+parts[1]), sig) {
-		f.t.Errorf("pass header %v or signature wrong", header)
+	// A pass signed with a sign-in key fga knows, or the dev issuer's.
+	pub, issuer, maxLife := f.pub, "fga-dev", 3600.0
+	if k, ok := f.signInKeys[header["kid"]]; ok {
+		pub, issuer, maxLife = k, keySignInIssuer, 300
+	} else if header["kid"] != "tok-1" {
+		return nil
+	}
+	if header["typ"] != "at+jwt" || header["alg"] != "EdDSA" || !ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig) {
+		// The console passes on an add-on's pass for fga to check, but a
+		// pass it made itself must always verify.
+		if issuer == "fga-dev" {
+			f.t.Errorf("pass header %v or signature wrong", header)
+		}
 		return nil
 	}
 	life := claims["exp"].(float64) - claims["iat"].(float64)
@@ -133,7 +145,7 @@ func (f *fakeFGA) verifyFor(auth, audience string) map[string]any {
 			audOK = audOK || x == audience
 		}
 	}
-	if claims["iss"] != "fga-dev" || !audOK || claims["fga_tenant"] != "t-acme" || life <= 0 || life > 3600 {
+	if claims["iss"] != issuer || !audOK || claims["fga_tenant"] != "t-acme" || life <= 0 || life > maxLife {
 		f.t.Errorf("pass claims %v", claims)
 		return nil
 	}
@@ -198,7 +210,11 @@ type env struct {
 	client  *http.Client
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { return newEnvWith(t, nil, time.Now) }
+
+// newEnvWith builds the console with its settings changed by change, and
+// its clock.
+func newEnvWith(t *testing.T, change func(*Config), now func() time.Time) *env {
 	t.Helper()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	dir := t.TempDir()
@@ -215,11 +231,14 @@ func newEnv(t *testing.T) *env {
 	cfg := &Config{Version: 1, Listen: "127.0.0.1:0", Tenant: "t-acme", StorageURL: fga.URL, Spaces: []string{"shared", "hidden"},
 		AdminURL: admin.URL, AdminAudience: "fga-admin", DataDir: filepath.Join(dir, "data"), SessionHours: 8, MaxUploadMB: 1,
 		DevSignIn: &DevSignIn{Issuer: "fga-dev", KeyID: "tok-1", KeyFile: keyFile, People: []string{"alice", "carl", "root"}}}
+	if change != nil {
+		change(cfg)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	web := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>fga console</title>")}}
-	s, err := New(cfg, web, http.DefaultClient, slog.New(slog.NewTextHandler(io.Discard, nil)), time.Now)
+	s, err := New(cfg, web, http.DefaultClient, slog.New(slog.NewTextHandler(io.Discard, nil)), now)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,6 +20,9 @@ import (
 
 var delegationID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
+// keyFingerprint is a sign-in key's fingerprint.
+var keyFingerprint = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
 // IDs of fga's data sources and data tools (docs/design/mcp-data-tools.md
 // in fga).
 var (
@@ -52,11 +55,20 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 	fixed := func(p string) func(*http.Request) (string, bool) {
 		return func(*http.Request) (string, bool) { return p, true }
 	}
+	// A sign-in key is named by its person and its fingerprint.
+	signInKeyRemoval := func(r *http.Request) (string, bool) {
+		person, fp := r.PathValue("id"), r.PathValue("fp")
+		return "/v1/admin/identities/" + url.PathEscape(person) + "/sign-in-keys/" + url.PathEscape(fp) + "/remove",
+			personID.MatchString(person) && keyFingerprint.MatchString(fp)
+	}
 	mux.HandleFunc("GET /api/admin/people", s.authed(s.forward(fixed("/v1/admin/identities"), "after", "limit")))
 	mux.HandleFunc("PUT /api/admin/people/{id}", s.authed(s.forward(id("/v1/admin/identities/", ""))))
 	mux.HandleFunc("POST /api/admin/people/{id}/disable", s.authed(s.forward(id("/v1/admin/identities/", "/disable"))))
 	mux.HandleFunc("POST /api/admin/people/{id}/grant", s.authed(s.forward(id("/v1/admin/identities/", "/capabilities/grant"))))
 	mux.HandleFunc("POST /api/admin/people/{id}/revoke", s.authed(s.forward(id("/v1/admin/identities/", "/capabilities/revoke"))))
+	mux.HandleFunc("GET /api/admin/people/{id}/sign-in-keys", s.authed(s.forward(id("/v1/admin/identities/", "/sign-in-keys"))))
+	mux.HandleFunc("POST /api/admin/people/{id}/sign-in-keys", s.authed(s.forward(id("/v1/admin/identities/", "/sign-in-keys"))))
+	mux.HandleFunc("POST /api/admin/people/{id}/sign-in-keys/{fp}/remove", s.authed(s.forward(signInKeyRemoval)))
 	mux.HandleFunc("GET /api/admin/delegations", s.authed(s.forward(fixed("/v1/admin/delegations"), "after", "limit")))
 	mux.HandleFunc("POST /api/admin/delegations", s.authed(s.forward(fixed("/v1/admin/delegations"))))
 	mux.HandleFunc("POST /api/admin/delegations/{id}/revoke", s.authed(s.forward(id("/v1/admin/delegations/", "/revoke"))))

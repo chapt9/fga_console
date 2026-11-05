@@ -165,7 +165,8 @@
       `<span class="muted">${esc(session.admin ? "Administrator" : session.person)}</span></div>` +
       `<button class="btn ghost icon sm" data-act="signOut" title="Sign out" aria-label="Sign out">${icon("logout")}</button></div></aside>` +
       `<main class="main"><header class="topbar"><h1>${esc(title)}</h1>${sub ? `<span class="sub">${sub}</span>` : ""}<span class="spacer"></span>` +
-      (session.dev ? `<span class="pill" title="People sign in by picking a name; for development only">Development sign-in</span>` : "") +
+      (session.with_key ? `<span class="pill" title="Signed in with the sign-in key in your key box; the add-on renews your passes">Signed in with your key</span>`
+        : session.dev ? `<span class="pill" title="People sign in by picking a name; for development only">Development sign-in</span>` : "") +
       `<button class="btn ghost icon" data-act="theme" aria-label="Switch light or dark">${icon(isDark() ? "sun" : "moon")}</button></header>` +
       `<div class="content">${body}</div></main></div>`;
   }
@@ -196,6 +197,18 @@
   function renderSignIn() {
     const people = (session && session.people) || [];
     const brand = `<div class="brand"><span class="brand-mark">${icon("mark")}</span><span>fga console<small>${esc(session ? session.organisation : "")}</small></span></div>`;
+    if (session && session.key_sign_in) {
+      const addon = hasAddon();
+      app.innerHTML = `<div class="login"><div class="login-card">${brand}<h1>Sign in</h1>` +
+        `<p class="lead">Sign in with your keys. The mosaic-key-store add-on asks you to unlock them in its own window, then gives this console short passes. fga then decides everything you see and do.</p>` +
+        `<button class="btn primary" data-act="keySignIn" ${addon ? "" : "disabled"}>${icon("lock")}Sign in with my keys</button>` +
+        (addon ? "" : `<p class="muted small spaced">The add-on is not in this browser. Install it, set up your key box, and reload this page.</p>`) +
+        (session.dev ? `<p class="muted small spaced">Development sign-in is on as well:</p><div class="tiles">` +
+          people.map(p => `<button class="tile" data-act="signIn" data-id="${esc(p)}">${avatar(p, "lg")}<span><b>${esc(displayName(p))}</b>` +
+            `<span class="muted">${esc(p)}</span></span></button>`).join("") + `</div>` : "") +
+        `<div class="login-foot">${icon("lock")}<span>Your keys stay in the add-on. This console only ever holds passes that expire within minutes, never a key.</span></div></div></div>`;
+      return;
+    }
     if (session && !session.dev) {
       app.innerHTML = `<div class="login"><div class="login-card">${brand}<h1>Sign in</h1>` +
         `<p class="lead">Sign in with your organisation's login. fga then decides everything you see and do.</p>` +
@@ -211,6 +224,76 @@
       `<div class="login-foot">${icon("lock")}<span>The console gets a short-lived pass for the person you pick, as the demo's <code>as</code> command does. ` +
       `In production you sign in with your organisation's login, and the console never sees a password.</span></div></div></div>`;
   }
+  // ---------------------------------------------------------------- key sign-in
+
+  // The mosaic-key-store add-on puts a small bridge on this page. The page
+  // asks it for passes; the add-on signs them with the sign-in key in the
+  // person's key box, in its own window, and this page hands them to the
+  // console server. Keys never reach this page.
+  const AUDIENCES = ["fga-storage", "fga-admin"];
+  const hasAddon = () => document.documentElement.dataset.mosaicKeyStore === "1";
+  function askAddon(interactive) {
+    return new Promise((resolve, reject) => {
+      const id = crypto.randomUUID();
+      const timer = setTimeout(() => { window.removeEventListener("message", on); reject(new Error("NO_ANSWER")); }, interactive ? 300000 : 15000);
+      function on(e) {
+        if (e.source !== window || e.origin !== location.origin || !e.data || e.data.mosaic !== "response" || e.data.id !== id) return;
+        clearTimeout(timer);
+        window.removeEventListener("message", on);
+        if (e.data.ok) resolve(e.data.passes); else reject(new Error(e.data.error || "REFUSED"));
+      }
+      window.addEventListener("message", on);
+      window.postMessage({ mosaic: "request", id, kind: "passes", audiences: AUDIENCES, interactive }, location.origin);
+    });
+  }
+  acts.keySignIn = async () => {
+    if (!hasAddon()) return toast("Install the mosaic-key-store add-on first", "bad");
+    let passes;
+    try { passes = await askAddon(true); }
+    catch (e) { return toast(e.message === "cancelled" ? "Sign-in cancelled" : "The add-on did not sign you in", "bad"); }
+    const r = await api("POST", "/api/signin/keys", { passes });
+    if (!r.ok) return toast(plainError(r.error), "bad");
+    await start();
+    go(home());
+  };
+  // The passes last minutes: the add-on renews them while the person's
+  // keys stay unlocked in its window.
+  let renewTimer = 0;
+  function renewLater(delay) {
+    clearTimeout(renewTimer);
+    if (!session || !session.with_key || !session.passes_until) return;
+    const at = delay !== undefined ? delay : Date.parse(session.passes_until) - 90000 - Date.now();
+    renewTimer = setTimeout(renew, Math.max(at, 5000));
+  }
+  async function renew() {
+    try {
+      const passes = await askAddon(false);
+      const r = await api("POST", "/api/session/passes", { passes });
+      if (r.ok && r.data) {
+        session.passes_until = r.data.passes_until;
+        document.getElementById("keyBanner")?.remove();
+        return renewLater();
+      }
+    } catch { /* locked or closed: say so below */ }
+    if (!document.getElementById("keyBanner")) {
+      document.body.insertAdjacentHTML("beforeend", `<div id="keyBanner" class="toast bad" role="status">Unlock your keys in the add-on to keep working. ` +
+        `<button class="btn sm" data-act="keyContinue">Unlock and continue</button></div>`);
+    }
+    renewLater(30000);
+  }
+  // The banner's button: the add-on asks the person again, in its window,
+  // and this session goes on with the new passes.
+  acts.keyContinue = async () => {
+    let passes;
+    try { passes = await askAddon(true); }
+    catch (e) { return toast(e.message === "cancelled" ? "Still locked" : "The add-on did not sign you in", "bad"); }
+    const r = await api("POST", "/api/session/passes", { passes });
+    if (!r.ok) return toast(plainError(r.error), "bad");
+    session.passes_until = r.data.passes_until;
+    document.getElementById("keyBanner")?.remove();
+    renewLater();
+  };
+
   acts.signIn = async d => {
     const r = await api("POST", "/api/signin", { person: d.id });
     if (!r.ok) return toast(plainError(r.error), "bad");
@@ -680,12 +763,14 @@
     const r = await api("GET", "/api/session");
     return r.ok ? r.data : { signed_in: false, organisation: "", people: [] };
   }
-  async function start() { session = await loadSession(); }
+  async function start() { session = await loadSession(); renewLater(); }
 
   document.addEventListener("DOMContentLoaded", async () => {
     try { const t = localStorage.getItem("fga-console-theme"); if (t) document.documentElement.dataset.theme = t; } catch { /* system theme */ }
     await start();
     window.addEventListener("hashchange", route);
+    // The add-on's bridge may arrive after this page: show its button then.
+    window.addEventListener("mosaic-key-store-ready", () => { if (!session || !session.signed_in) route(); });
     route();
   });
 })();

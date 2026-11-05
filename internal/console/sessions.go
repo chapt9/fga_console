@@ -23,6 +23,47 @@ type Session struct {
 	refreshToken string
 	expires      time.Time
 	idToken      string
+	// keyPasses are the passes the person's add-on signed with their
+	// sign-in key, by audience (keysignin.go).
+	keyPasses map[string]keyPass
+}
+
+// setKeyPasses replaces the session's passes from the add-on.
+func (ss *Session) setKeyPasses(p map[string]keyPass) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.keyPasses = p
+}
+
+// keySession reports whether the person signed in with a key.
+func (ss *Session) keySession() bool {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.keyPasses != nil
+}
+
+// keyPass returns the pass for audience that is still valid at by.
+func (ss *Session) keyPass(audience string, by time.Time) (string, bool) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	p, ok := ss.keyPasses[audience]
+	if !ok || !p.expires.After(by) {
+		return "", false
+	}
+	return p.token, true
+}
+
+// keyPassesUntil is when the first of the session's passes expires.
+func (ss *Session) keyPassesUntil() time.Time {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	var first time.Time
+	for _, p := range ss.keyPasses {
+		if first.IsZero() || p.expires.Before(first) {
+			first = p.expires
+		}
+	}
+	return first
 }
 
 // Sessions keeps sessions in memory: a restart signs everyone out. A session

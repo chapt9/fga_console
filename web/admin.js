@@ -313,10 +313,87 @@
       `<div class="field"><span>Roles</span><div class="check-grid">${[...new Set([...allRoles(), ...p.roles])].map(r => `<label class="check"><input type="checkbox" data-role="${esc(r)}" ${p.roles.includes(r) ? "checked" : ""}>${esc(W.role(r).one)}</label>`).join("")}</div>` +
         `<input class="input spaced-sm" id="fNewRole" placeholder="Another role, such as reviewer" autocomplete="off"><small>Rules name roles; a role no rule names gives nothing.</small></div>` +
       (Object.keys(otherAttrs).length ? `<div class="field"><span>Other attributes</span><div class="preview">${esc(JSON.stringify(otherAttrs, null, 1))}</div><small>Kept as they are.</small></div>` : "") +
+      (isNew ? "" : `<div class="field" id="signInKeys"><span>Sign-in keys</span><div class="muted small">Asking fga…</div></div>`) +
       `<p class="muted small">${icon("lock", "xs")} fga records every change, and writes anything taken away to its security journal first.</p>`,
       (isNew || p.disabled ? "" : `<button class="btn danger" data-act="disablePerson" data-id="${esc(p.id)}">Disable</button><span class="spacer"></span>`) +
       `<button class="btn" data-act="closeDrawer">Cancel</button><button class="btn primary" id="savePersonBtn" data-act="savePerson" data-id="${esc(p.id)}" data-new="${isNew ? 1 : 0}">Save</button>`);
+    if (!isNew) refreshSignInKeys(p.id);
   };
+
+  // ---------------------------------------------------------------- sign-in keys
+
+  // A person's sign-in keys (fga docs/design/sign-in-keys.md): the keys
+  // their programs sign their own passes with. An administrator registers
+  // one after checking its fingerprint with them, and can remove it at once.
+  const SERVICES = [["fga-storage", "Files and data"], ["fga-keys", "Keys"], ["fga-mcp", "AI assistants"], ["fga-admin", "Administration"]];
+  const LABELS = ["public", "internal", "confidential", "restricted"];
+  const keyLimits = l => [
+    l.services && l.services.length ? "only " + l.services.map(x => (SERVICES.find(y => y[0] === x) || [x, x])[1]).join(", ") : "",
+    l.max_label ? `at most ${W.label(l.max_label).name}` : "",
+    l.spaces && l.spaces.length ? `only the spaces ${l.spaces.join(", ")}` : ""].filter(Boolean).join("; ") || "no limits beyond their rights";
+  async function refreshSignInKeys(person) {
+    const r = await api("GET", `/api/admin/people/${encodeURIComponent(person)}/sign-in-keys`);
+    const box = document.getElementById("signInKeys");
+    if (!box) return;
+    const list = r.ok ? r.data.items || [] : [];
+    box.innerHTML = `<span>Sign-in keys</span>` + (!r.ok ? `<div class="muted small">${esc(fail(r.error))}</div>` :
+      (list.length ? list.map(k => `<div class="list-row" data-key="${esc(k.fingerprint)}"><div class="grow"><b>${esc(k.label)}</b> ` +
+        `<span class="badge ${k.status === "ACTIVE" ? "ok" : "muted"}">${k.status === "ACTIVE" ? "Active" : "Removed"}</span>` +
+        `<code class="tech block">${esc(k.fingerprint)}</code><div class="muted small">${esc(keyLimits(k.limits || {}))}</div></div>` +
+        (k.status === "ACTIVE" ? `<button class="btn sm ghost" data-act="removeSignInKey" data-id="${esc(person)}" data-fp="${esc(k.fingerprint)}" data-label="${esc(k.label)}">Remove</button>` : "") +
+        `</div>`).join("") : `<div class="muted small">No sign-in key yet, so ${esc(displayName(person))} cannot sign in with a key.</div>`) +
+      `<button class="btn sm spaced-sm" data-act="newSignInKey" data-id="${esc(person)}">${icon("plus")}Register a key</button>`);
+  }
+  acts.newSignInKey = (d, el) => {
+    if (document.getElementById("keyForm")) return;
+    el.insertAdjacentHTML("afterend", `<div id="keyForm" class="card spaced-sm">` +
+      `<label class="field"><span>Public key</span><input class="input" id="fKeyPub" data-on-input="keyFingerprint" placeholder="base64, as fga sign-in-key new prints it" autocomplete="off"></label>` +
+      `<div class="muted small" id="fKeyFp">The fingerprint shows here: check it with them, face to face or by phone, before you register it.</div>` +
+      `<label class="field"><span>Where it is used</span><input class="input" id="fKeyLabel" placeholder="Dana's laptop" autocomplete="off"></label>` +
+      `<div class="field"><span>Only for</span><div class="check-grid">${SERVICES.map(([v, t]) => `<label class="check"><input type="checkbox" data-service="${v}">${esc(t)}</label>`).join("")}</div>` +
+        `<small>None ticked: every service, within their rights.</small></div>` +
+      `<label class="field"><span>Highest sensitivity</span><select class="input" id="fKeyMax"><option value="">As their rights allow</option>` +
+        LABELS.map(l => `<option value="${l}">${esc(W.label(l).name)}</option>`).join("") + `</select></label>` +
+      `<label class="field"><span>Only these spaces</span><input class="input" id="fKeySpaces" placeholder="greenhouse, reports" autocomplete="off"><small>Empty: every space, within their rights.</small></label>` +
+      `<button class="btn sm primary" id="saveKeyBtn" data-act="saveSignInKey" data-id="${esc(d.id)}">Register the key</button></div>`);
+  };
+  const b64bytes = s => { try { const b = Uint8Array.from(atob(s.trim()), c => c.charCodeAt(0)); return b.length === 32 ? b : null; } catch { return null; } };
+  // The fingerprint fga computes: SHA-256 of "fga.sign-in-key/v1", a zero
+  // byte and the raw public key.
+  async function signInFingerprint(pub) {
+    const domain = new TextEncoder().encode("fga.sign-in-key/v1");
+    const all = new Uint8Array(domain.length + 1 + pub.length);
+    all.set(domain); all.set(pub, domain.length + 1);
+    return "sha256:" + [...new Uint8Array(await crypto.subtle.digest("SHA-256", all))].map(x => x.toString(16).padStart(2, "0")).join("");
+  }
+  acts.keyFingerprint = async (d, el) => {
+    const pub = b64bytes(el.value), out = document.getElementById("fKeyFp");
+    out.textContent = pub ? `Fingerprint ${await signInFingerprint(pub)}: check it with them before you register it.` : "Paste the 32-byte public key in base64.";
+  };
+  acts.saveSignInKey = async d => {
+    const pub = val("fKeyPub").trim(), label = val("fKeyLabel").trim();
+    if (!b64bytes(pub)) return toast("Paste the 32-byte public key in base64", "bad");
+    if (!label) return toast("Say where the key is used", "bad");
+    const limits = {};
+    const services = [...document.querySelectorAll("#keyForm [data-service]")].filter(c => c.checked).map(c => c.dataset.service);
+    if (services.length) limits.services = services;
+    if (val("fKeyMax")) limits.max_label = val("fKeyMax");
+    const spaces = val("fKeySpaces").split(",").map(x => x.trim()).filter(Boolean);
+    if (spaces.length) limits.spaces = spaces;
+    document.getElementById("saveKeyBtn").disabled = true;
+    const r = await api("POST", `/api/admin/people/${encodeURIComponent(d.id)}/sign-in-keys`, { public_key: pub, label, limits });
+    if (!r.ok) { document.getElementById("saveKeyBtn").disabled = false; return toast(fail(r.error), "bad"); }
+    toast(`Registered ${label}`, "ok");
+    refreshSignInKeys(d.id);
+  };
+  acts.removeSignInKey = d => confirmBox(`Remove the key "${d.label}"?`,
+    `<p>Passes it signs stop working at once, and it can never be registered again. fga writes the removal to its security journal first.</p>`,
+    "Remove the key", async () => {
+      const r = await api("POST", `/api/admin/people/${encodeURIComponent(d.id)}/sign-in-keys/${encodeURIComponent(d.fp)}/remove`);
+      if (!r.ok) return toast(fail(r.error), "bad");
+      toast(`Removed ${d.label}`, "ok");
+      refreshSignInKeys(d.id);
+    });
   acts.applyProfile = (d, el) => {
     const x = profiles.find(y => y.id === el.value);
     if (!x) return;

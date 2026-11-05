@@ -55,6 +55,10 @@ type Config struct {
 	MaxUploadMB  int64      `json:"max_upload_mb,omitempty"`
 	OIDC         *OIDC      `json:"oidc,omitempty"`
 	DevSignIn    *DevSignIn `json:"dev_signin,omitempty"`
+	// KeySignIn lets people sign in with the sign-in key in their key
+	// box, through the mosaic-key-store add-on, which signs their passes
+	// (keysignin.go).
+	KeySignIn bool `json:"key_sign_in,omitempty"`
 }
 
 // ServerTLS is the console's own HTTPS certificate.
@@ -267,8 +271,8 @@ func (c *Config) Validate() error {
 		bad("without tls the console may listen only on this machine (loopback)")
 	}
 	switch {
-	case c.OIDC == nil && c.DevSignIn == nil:
-		bad("name a way to sign in: oidc (the organisation's login) or dev_signin")
+	case c.OIDC == nil && c.DevSignIn == nil && !c.KeySignIn:
+		bad("name a way to sign in: key_sign_in (sign-in keys through the add-on), oidc (the organisation's login) or dev_signin")
 	case c.OIDC != nil && c.DevSignIn != nil:
 		bad("use either oidc or dev_signin, not both")
 	case c.DevSignIn != nil:
@@ -290,7 +294,7 @@ func (c *Config) Validate() error {
 				bad("dev_signin.people: %q is not a valid sign-in name", p)
 			}
 		}
-	default:
+	case c.OIDC != nil:
 		o := c.OIDC
 		address("oidc.issuer", o.Issuer, true)
 		address("public_url", c.PublicURL, true)
